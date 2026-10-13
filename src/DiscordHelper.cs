@@ -21,22 +21,36 @@ public static class ModelApi {
     public static string BaseUrl(string provider) {
         if(provider=="OctavAPI") return "https://octavapi.shop/v1";
         if(provider=="OpenAI") return "https://api.openai.com/v1";
+        if(provider=="NovaAPI") return "https://ru.cheapvibecode.ru/backend-api/codex";
         throw new ArgumentException("Неизвестный сервис.");
+    }
+    public static string DefaultModel(string provider) { BaseUrl(provider); return provider=="NovaAPI"?"gpt-5.6-terra":provider=="OctavAPI"?"gpt-6-luna":"gpt-4.1"; }
+    public static string EnvironmentKey(string provider) {
+        BaseUrl(provider); return provider=="NovaAPI"?(Environment.GetEnvironmentVariable("NOVA_API_KEY")??Environment.GetEnvironmentVariable("CVC_API_KEY")??""):Environment.GetEnvironmentVariable(provider=="OctavAPI"?"OCTAVA_API_KEY":"OPENAI_API_KEY")??"";
     }
     public static HttpRequestMessage CreateRequest(string provider,string key,string model,string prompt,byte[] png) {
         var request=new HttpRequestMessage(HttpMethod.Post,BaseUrl(provider)+"/responses");
         request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",key);
-        request.Content=new StringContent(BuildPayload(model,prompt,png),Encoding.UTF8,"application/json");
+        string payload=BuildPayload(model,prompt,png);
+        if(provider=="NovaAPI") {
+            var serializer=new JavaScriptSerializer { MaxJsonLength=32*1024*1024 }; var root=serializer.DeserializeObject(payload) as Dictionary<string,object>;
+            root.Remove("max_output_tokens"); root["stream"]=true; payload=serializer.Serialize(root);
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        }
+        request.Content=new StringContent(payload,Encoding.UTF8,"application/json");
         return request;
     }
     public static string[] ParseModels(string json) {
         var root=new JavaScriptSerializer { MaxJsonLength=32*1024*1024 }.DeserializeObject(json) as Dictionary<string,object>;
         object data;
-        if(root==null || !root.TryGetValue("data",out data) || !(data is object[])) throw new Exception("Сервис не вернул список моделей.");
+        bool catalog=root!=null && root.ContainsKey("models") && !root.ContainsKey("data");
+        if(root==null || !root.TryGetValue(catalog?"models":"data",out data) || !(data is object[])) throw new Exception("Сервис не вернул список моделей.");
         var models=new List<string>();
         foreach(var item in (object[])data) {
             var entry=item as Dictionary<string,object>; object id;
-            if(entry!=null && entry.TryGetValue("id",out id) && id is string && !String.IsNullOrWhiteSpace((string)id) && !models.Contains((string)id)) models.Add((string)id);
+            object available,visibility;
+            if(catalog && (entry==null || !entry.TryGetValue("supported_in_api",out available) || !(available is bool) || !(bool)available || !entry.TryGetValue("visibility",out visibility) || Convert.ToString(visibility)!="list")) continue;
+            if(entry!=null && entry.TryGetValue(catalog?"slug":"id",out id) && id is string && !String.IsNullOrWhiteSpace((string)id) && !models.Contains((string)id)) models.Add((string)id);
         }
         models.Sort(StringComparer.OrdinalIgnoreCase); return models.ToArray();
     }
@@ -86,17 +100,56 @@ public static class ModelApi {
         if(texts.Count==0) throw new Exception("Сервер не вернул текстовый ответ.");
         return String.Join(Environment.NewLine, texts.ToArray());
     }
+    class StreamAnswer {
+        StringBuilder data=new StringBuilder(),deltas=new StringBuilder();
+        public string Feed(string line) {
+            if(line!=null && line.Length>0) {
+                if(line.StartsWith("data:",StringComparison.Ordinal)) { if(data.Length>0) data.Append('\n'); data.Append(line.Substring(5).TrimStart(' ')); if(data.Length>32*1024*1024) throw new Exception("Ответ сервера слишком большой."); }
+                return null;
+            }
+            if(data.Length==0) return null; string json=data.ToString(); data.Clear(); if(json=="[DONE]") return null;
+            var serializer=new JavaScriptSerializer { MaxJsonLength=32*1024*1024 }; var root=serializer.DeserializeObject(json) as Dictionary<string,object>; object type,body;
+            if(root==null || !root.TryGetValue("type",out type)) return null;
+            string kind=Convert.ToString(type);
+            if((kind=="response.output_text.delta" || kind=="response.refusal.delta") && root.TryGetValue("delta",out body)) { deltas.Append(Convert.ToString(body)); if(deltas.Length>32*1024*1024) throw new Exception("Ответ сервера слишком большой."); }
+            if(kind=="error" || kind=="response.failed" || kind=="response.incomplete") throw new Exception("Сервис прервал ответ: "+kind+".");
+            if(kind=="response.completed") {
+                if(root.TryGetValue("response",out body)) { try { return ParseAnswer(serializer.Serialize(body)); } catch(Exception) { if(deltas.Length==0) throw; } }
+                if(deltas.Length>0) return deltas.ToString(); throw new Exception("Сервис завершил поток без текстового ответа.");
+            }
+            return null;
+        }
+    }
+    public static string ParseStreamAnswer(string text) {
+        var parser=new StreamAnswer(); using(var reader=new StringReader(text)) { string line,result; while((line=reader.ReadLine())!=null) if((result=parser.Feed(line))!=null) return result; result=parser.Feed(null); if(result!=null) return result; }
+        throw new Exception("Поток оборвался до подтверждения завершения ответа.");
+    }
+    static async Task<string> ReadAnswer(HttpResponseMessage response,CancellationToken token) {
+        token.ThrowIfCancellationRequested();
+        string type=response.Content.Headers.ContentType==null?"":response.Content.Headers.ContentType.MediaType;
+        using(var stream=await response.Content.ReadAsStreamAsync())
+        using(var reader=new StreamReader(stream,Encoding.UTF8))
+        using(var registration=token.Register(()=>stream.Dispose())) {
+            try {
+                token.ThrowIfCancellationRequested();
+                if(!String.Equals(type,"text/event-stream",StringComparison.OrdinalIgnoreCase)) { string json=await reader.ReadToEndAsync(); token.ThrowIfCancellationRequested(); return ParseAnswer(json); }
+                var parser=new StreamAnswer(); string line,result; while((line=await reader.ReadLineAsync())!=null) { token.ThrowIfCancellationRequested(); if((result=parser.Feed(line))!=null) return result; } result=parser.Feed(null); if(result!=null) return result; throw new Exception("Поток оборвался до подтверждения завершения ответа.");
+            }
+            catch(Exception) { token.ThrowIfCancellationRequested(); throw; }
+        }
+    }
     public static async Task<string> Ask(string key, string model, string prompt, byte[] png, CancellationToken token) {
         return await Ask("OpenAI",key,model,prompt,png,token);
     }
     public static async Task<string> Ask(string provider,string key, string model, string prompt, byte[] png, CancellationToken token) {
         ServicePointManager.SecurityProtocol=SecurityProtocolType.Tls12;
         using(var handler=new HttpClientHandler { AllowAutoRedirect=false })
-        using(var client=new HttpClient(handler)) {
+        using(var client=new HttpClient(handler))
+        using(var deadline=CancellationTokenSource.CreateLinkedTokenSource(token)) {
+            deadline.CancelAfter(TimeSpan.FromSeconds(120));
             client.Timeout=TimeSpan.FromSeconds(120);
             using(var request=CreateRequest(provider,key,model,prompt,png)) {
-                using(var response=await client.SendAsync(request,token)) {
-                    string json=await response.Content.ReadAsStringAsync();
+                using(var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,deadline.Token)) {
                     if(!response.IsSuccessStatusCode) {
                         string hint="Проверь доступ к модели и подключение.";
                         if((int)response.StatusCode==401) hint="Проверь API-ключ.";
@@ -106,7 +159,7 @@ public static class ModelApi {
                         if((int)response.StatusCode==404) hint="Проверь название модели.";
                         throw new Exception("HTTP "+(int)response.StatusCode+". "+hint);
                     }
-                    return ParseAnswer(json);
+                    return await ReadAnswer(response,deadline.Token);
                 }
             }
         }
@@ -309,7 +362,7 @@ class DiscordHelper : Form {
         var fields=new TableLayoutPanel { Dock=DockStyle.Fill, ColumnCount=2, RowCount=7, Margin=new Padding(0) };
         fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,90)); fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
         int[] heights={34,34,36,34,34,34,40}; foreach(int height in heights) fields.RowStyles.Add(new RowStyle(SizeType.Absolute,height));
-        provider.DropDownStyle=ComboBoxStyle.DropDownList; provider.Items.AddRange(new object[]{"OctavAPI","OpenAI"}); provider.SelectedIndex=0;
+        provider.DropDownStyle=ComboBoxStyle.DropDownList; provider.Items.AddRange(new object[]{"OctavAPI","OpenAI","NovaAPI"}); provider.SelectedIndex=0;
         key.UseSystemPasswordChar=true; key.Text=Environment.GetEnvironmentVariable("OCTAVA_API_KEY")??""; model.Text="gpt-6-luna";
         AddSetting(fields,"Сервис",provider,0);
         var keyHost=new RoundPanel { Dock=DockStyle.Fill, Padding=new Padding(9,6,9,4), Margin=new Padding(3), BackColor=Color.FromArgb(39,43,53) }; key.Dock=DockStyle.Fill; keyHost.Controls.Add(key); AddSetting(fields,"API-ключ",keyHost,1);
@@ -347,7 +400,7 @@ class DiscordHelper : Form {
         var answerTools=new FlowLayoutPanel { Dock=DockStyle.Right, Width=192, WrapContents=false }; cancel.Text="Отмена"; cancel.Size=new Size(80,30); cancel.Enabled=false; copy.Text="Копировать"; copy.Size=new Size(104,30); answerTools.Controls.AddRange(new Control[]{cancel,copy}); answerHeader.Controls.Add(answerLabel); answerHeader.Controls.Add(answerTools);
         answer.Dock=DockStyle.Fill; answer.Multiline=true; answer.ReadOnly=true; answer.ScrollBars=ScrollBars.None; answer.Text="Здесь появится ответ."; answerCard.Controls.Add(answer); answerCard.Controls.Add(answerHeader); mainLayout.Controls.Add(answerCard,0,6);
         status.Dock=DockStyle.Fill; status.Font=new Font("Segoe UI",9); status.ForeColor=Muted(); status.Margin=new Padding(2,4,2,0); status.Text=key.Text.Length==0?"Открой настройки и введи API-ключ.":"Готово · OctavAPI"; mainLayout.Controls.Add(status,0,7);
-        provider.SelectedIndexChanged+=delegate { key.Clear(); key.Text=Environment.GetEnvironmentVariable(provider.Text=="OctavAPI"?"OCTAVA_API_KEY":"OPENAI_API_KEY")??""; model.Items.Clear(); model.Text=provider.Text=="OctavAPI"?"gpt-6-luna":"gpt-4.1"; destination.Text="Получатель: "+new Uri(ModelApi.BaseUrl(provider.Text)).Host; status.Text="Выбран "+provider.Text+". Введи ключ этого сервиса."; };
+        provider.SelectedIndexChanged+=delegate { key.Clear(); key.Text=ModelApi.EnvironmentKey(provider.Text); model.Items.Clear(); model.Text=ModelApi.DefaultModel(provider.Text); destination.Text="Получатель: "+new Uri(ModelApi.BaseUrl(provider.Text)).Host; status.Text="Выбран "+provider.Text+". Введи ключ этого сервиса."; };
         loadModels.Click+=async delegate { await LoadModels(); }; top.CheckedChanged+=delegate { TopMost=top.Checked; }; excludeCapture.CheckedChanged+=delegate { ApplyCaptureExclusion(); };
         opacitySlider.ValueChanged+=delegate { Opacity=opacitySlider.Value/100.0; opacityLabel.Text="Видимость "+opacitySlider.Value+"%"; ApplyCaptureExclusion(); };
         capture.Click+=delegate { CaptureScreen(); }; send.Click+=async delegate { await Send(); }; captureSend.Click+=delegate { CaptureScreen(true); };
