@@ -17,6 +17,10 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
+[assembly: System.Reflection.AssemblyTitle("DeskHost")]
+[assembly: System.Reflection.AssemblyProduct("DeskHost")]
+[assembly: System.Reflection.AssemblyDescription("Desktop utility host")]
+
 public static class ModelApi {
     public static string BaseUrl(string provider) {
         if(provider=="OctavAPI") return "https://octavapi.shop/v1";
@@ -181,7 +185,7 @@ static class RoundedGeometry {
 }
 class RoundPanel : Panel {
     public RoundPanel() { DoubleBuffered=true; BackColor=Color.FromArgb(29,32,40); Margin=new Padding(0,0,0,10); }
-    protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); RoundedGeometry.Clip(this,14); }
+    protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); Invalidate(); }
     protected override void OnPaintBackground(PaintEventArgs e) {
         e.Graphics.Clear(Parent==null?Color.FromArgb(19,21,27):Parent.BackColor);
         e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
@@ -193,7 +197,8 @@ class RoundButton : Button {
     public RoundButton() { FlatStyle=FlatStyle.Flat; FlatAppearance.BorderSize=0; BackColor=Color.FromArgb(39,43,53); ForeColor=Color.FromArgb(232,234,240); Cursor=Cursors.Default; Size=new Size(100,34); Margin=new Padding(0,0,8,0); }
     protected override void OnMouseEnter(EventArgs e) { hover=true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { hover=false; Invalidate(); base.OnMouseLeave(e); }
-    protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); RoundedGeometry.Clip(this,10); }
+    protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); Invalidate(); }
+    protected override void OnPaintBackground(PaintEventArgs e) { e.Graphics.Clear(Parent==null?Color.FromArgb(19,21,27):Parent.BackColor); }
     protected override void OnPaint(PaintEventArgs e) {
         e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
         Color fill=hover&&Enabled?ControlPaint.Light(BackColor,0.15f):BackColor;
@@ -237,6 +242,9 @@ class DarkComboBox : ComboBox {
                 using(var brush=new SolidBrush(BackColor)) g.FillRectangle(brush,button);
                 g.SmoothingMode=SmoothingMode.AntiAlias; int x=Width-11,y=Height/2;
                 using(var pen=new Pen(ForeColor,1.4f)) g.DrawLines(pen,new Point[]{new Point(x-3,y-2),new Point(x,y+1),new Point(x+3,y-2)});
+                using(var mask=new GraphicsPath(FillMode.Alternate))
+                using(var rounded=RoundedGeometry.Path(ClientRectangle,8))
+                using(var brush=new SolidBrush(Parent==null?Color.FromArgb(19,21,27):Parent.BackColor)) { mask.AddRectangle(ClientRectangle); mask.AddPath(rounded,false); g.FillPath(brush,mask); }
             }
         }
     }
@@ -315,8 +323,12 @@ public static class PackageRemoval {
     public static void Schedule() { string script=BuildScript(Application.ExecutablePath,Process.GetCurrentProcess().Id); using(var helper=Process.Start(StartInfo(script))) { if(helper==null) throw new Exception("Не удалось запустить удаление файлов."); } }
 }
 class DiscordHelper : Form {
+    protected override CreateParams CreateParams {
+        get { var parameters=base.CreateParams; parameters.ExStyle=(parameters.ExStyle|0x80)&~0x40000; return parameters; }
+    }
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h,int message,IntPtr w,IntPtr l);
+    [DllImport("user32.dll")] static extern bool RedrawWindow(IntPtr window,IntPtr rectangle,IntPtr region,uint flags);
     [DllImport("user32.dll")] static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll", SetLastError=true)] static extern bool RegisterHotKey(IntPtr h,int id,uint mods,uint key);
     [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr h,int id);
@@ -338,7 +350,7 @@ class DiscordHelper : Form {
     [STAThread] static void Main() { Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false); Application.Run(new DiscordHelper()); }
     public DiscordHelper() {
         hotkeys=HotkeySettings.Load(HotkeySettings.PathName);
-        Text="Discord Helper"; ShowInTaskbar=false; FormBorderStyle=FormBorderStyle.None; Size=new Size(620,760); MinimumSize=new Size(600,720); StartPosition=FormStartPosition.CenterScreen;
+        Text="DeskHost"; ShowInTaskbar=false; FormBorderStyle=FormBorderStyle.None; Size=new Size(620,760); MinimumSize=new Size(600,720); StartPosition=FormStartPosition.CenterScreen;
         Font=new Font("Segoe UI",10); BackColor=Color.FromArgb(19,21,27); ForeColor=Color.FromArgb(232,234,240); TopMost=true;
         AutoScaleMode=AutoScaleMode.Dpi; DoubleBuffered=true; Padding=new Padding(18);
         mainLayout=new TableLayoutPanel { Dock=DockStyle.Fill, ColumnCount=1, RowCount=8, Margin=new Padding(0) };
@@ -346,7 +358,7 @@ class DiscordHelper : Form {
         foreach(int height in rows) mainLayout.RowStyles.Add(new RowStyle(height<0?SizeType.Percent:SizeType.Absolute,height<0?100:height));
         Controls.Add(mainLayout);
         var titleBar=new Panel { Dock=DockStyle.Fill, Margin=new Padding(0) };
-        var title=new Label { Text="Helper", Font=new Font("Segoe UI",15,FontStyle.Bold), AutoSize=true, Location=new Point(2,6) }; titleBar.Controls.Add(title);
+        var title=new Label { Text="DeskHost", Font=new Font("Segoe UI",15,FontStyle.Bold), AutoSize=true, Location=new Point(2,6) }; titleBar.Controls.Add(title);
         var windowButtons=new FlowLayoutPanel { Dock=DockStyle.Right, Width=264, WrapContents=false, Margin=new Padding(0) };
         settingsButton.Text="Настройки"; settingsButton.Size=new Size(114,34); settingsButton.Margin=new Padding(0,0,10,0);
         minimizeButton.Text="−"; maximizeButton.Text="□"; closeButton.Text="×";
@@ -385,7 +397,7 @@ class DiscordHelper : Form {
         key.BackColor=keyHost.BackColor;
         foreach(var box in new ComboBox[]{model,provider,monitor}) {
             box.BackColor=Color.FromArgb(39,43,53); box.ForeColor=ForeColor; box.FlatStyle=FlatStyle.Flat;
-            box.SizeChanged+=delegate(object sender,EventArgs e) { RoundedGeometry.Clip((Control)sender,8); };
+            box.SizeChanged+=delegate(object sender,EventArgs e) { ((Control)sender).Invalidate(); };
             if(box.DropDownStyle==ComboBoxStyle.DropDownList) { box.DrawMode=DrawMode.OwnerDrawFixed; box.ItemHeight=22; box.DrawItem+=delegate(object sender,DrawItemEventArgs e) { var combo=(ComboBox)sender; using(var fill=new SolidBrush((e.State&DrawItemState.Selected)!=0?Color.FromArgb(59,64,79):combo.BackColor)) e.Graphics.FillRectangle(fill,e.Bounds); if(e.Index>=0) TextRenderer.DrawText(e.Graphics,combo.GetItemText(combo.Items[e.Index]),combo.Font,new Rectangle(e.Bounds.X+8,e.Bounds.Y,e.Bounds.Width-8,e.Bounds.Height),combo.ForeColor,TextFormatFlags.Left|TextFormatFlags.VerticalCenter); }; }
         }
         var shotCard=new RoundPanel { Dock=DockStyle.Fill, Padding=new Padding(12) }; preview.Dock=DockStyle.Left; preview.Width=78; preview.SizeMode=PictureBoxSizeMode.Zoom; preview.BackColor=shotCard.BackColor;
@@ -467,6 +479,7 @@ class DiscordHelper : Form {
     }
     void ApplyCaptureExclusion() {
         if(!IsHandleCreated) return;
+        foreach(ComboBox combo in new ComboBox[]{provider,model,monitor}) if(combo.DroppedDown) combo.DroppedDown=false;
         uint desired=excludeCapture.Checked ? 0x11u : 0u;
         if(!SetWindowDisplayAffinity(Handle,desired)) {
             captureStatus.Text="Не применено: ошибка Windows "+Marshal.GetLastWin32Error()+"."; return;
@@ -477,6 +490,7 @@ class DiscordHelper : Form {
         }
         captureStatus.Text=excludeCapture.Checked ? "Скрытие из захвата включено · проверь трансляцию" : "Скрытие выключено";
         foreach(DarkComboBox combo in new DarkComboBox[]{(DarkComboBox)provider,(DarkComboBox)model,(DarkComboBox)monitor}) if(!combo.SetPopupCaptureAffinity(desired)) ReportPopupCaptureError();
+        if(Visible) { Invalidate(true); RedrawWindow(Handle,IntPtr.Zero,IntPtr.Zero,0x585); Update(); }
     }
     public void ReportPopupCaptureError() { captureStatus.Text="Windows не подтвердила скрытие списка."; status.Text="Выпадающий список закрыт: скрытие не подтверждено."; }
     protected override void OnHandleDestroyed(EventArgs e) { for(int id=1;id<=5;id++) UnregisterHotKey(Handle,id); base.OnHandleDestroyed(e); }
