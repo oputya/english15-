@@ -1,0 +1,10 @@
+.vs/
+obj/
+work/
+*.user
+*.suo
+*.pdb
+.env
+.env.*
+api-key.txt
+api-keys.txt
