@@ -165,6 +165,36 @@ class DarkComboBox : ComboBox {
         }
     }
 }
+public class HotkeyBinding {
+    public int Id { get; set; } public uint Modifiers { get; set; } public int Key { get; set; }
+    public HotkeyBinding Clone() { return new HotkeyBinding { Id=Id,Modifiers=Modifiers,Key=Key }; }
+    public string Display() { return ((Modifiers&2)!=0?"Ctrl+":"")+((Modifiers&1)!=0?"Alt+":"")+((Modifiers&4)!=0?"Shift+":"")+(Key==(int)Keys.Up?"↑":Key==(int)Keys.Down?"↓":Key==(int)Keys.Right?"→":Key==(int)Keys.Left?"←":((Keys)Key).ToString()); }
+}
+public class HotkeyProfile { public string Application { get; set; } public int Version { get; set; } public HotkeyBinding[] Bindings { get; set; } }
+public static class HotkeySettings {
+    public static string PathName { get { return Path.Combine(Path.GetDirectoryName(System.Windows.Forms.Application.ExecutablePath),"hotkeys.json"); } }
+    public static HotkeyBinding[] Defaults() { return new[]{new HotkeyBinding{Id=1,Modifiers=2,Key=(int)Keys.Down},new HotkeyBinding{Id=2,Modifiers=2,Key=(int)Keys.Right},new HotkeyBinding{Id=3,Modifiers=2,Key=(int)Keys.Up},new HotkeyBinding{Id=4,Modifiers=6,Key=(int)Keys.Up},new HotkeyBinding{Id=5,Modifiers=6,Key=(int)Keys.Down}}; }
+    public static string Validate(HotkeyBinding[] bindings) {
+        if(bindings==null || bindings.Length!=5) return "Нужны все пять сочетаний.";
+        var ids=new HashSet<int>(); var combinations=new HashSet<long>();
+        foreach(var binding in bindings) {
+            if(binding==null || binding.Id<1 || binding.Id>5 || !ids.Add(binding.Id)) return "Некорректный список действий.";
+            int key=binding.Key;
+            if(binding.Modifiers==0 || (binding.Modifiers&~7u)!=0 || key<=0 || key>254 || key==16 || key==17 || key==18 || key==91 || key==92 || (key>=160 && key<=165)) return "Используй Ctrl, Alt или Shift вместе с обычной клавишей.";
+            if(!combinations.Add(((long)binding.Modifiers<<32)|((uint)key))) return "Одно сочетание нельзя назначить двум действиям.";
+        }
+        return null;
+    }
+    public static bool IsOwned(string path) { try { var p=new JavaScriptSerializer().Deserialize<HotkeyProfile>(File.ReadAllText(path)); return p!=null && p.Application=="DiscordHelper" && p.Version==1; } catch { return false; } }
+    public static HotkeyBinding[] Load(string path) { try { var p=new JavaScriptSerializer().Deserialize<HotkeyProfile>(File.ReadAllText(path)); if(p!=null && p.Application=="DiscordHelper" && p.Version==1 && Validate(p.Bindings)==null) { Array.Sort(p.Bindings,(a,b)=>a.Id.CompareTo(b.Id)); return p.Bindings; } } catch { } return Defaults(); }
+    public static void Save(string path,HotkeyBinding[] bindings) {
+        string error=Validate(bindings); if(error!=null) throw new ArgumentException(error);
+        if(File.Exists(path) && !IsOwned(path)) throw new IOException("hotkeys.json не является настройками приложения; файл не перезаписан.");
+        string temporary=path+"."+Guid.NewGuid().ToString("N")+".tmp";
+        try { File.WriteAllText(temporary,new JavaScriptSerializer().Serialize(new HotkeyProfile{Application="DiscordHelper",Version=1,Bindings=bindings}),Encoding.UTF8); if(File.Exists(path)) File.Replace(temporary,path,null); else File.Move(temporary,path); }
+        finally { if(File.Exists(temporary)) File.Delete(temporary); }
+    }
+}
 public static class PackageRemoval {
     public const string ReadmeMarker="<!-- DiscordHelper removable package v1 -->";
     static string Quote(string value) { return "'"+value.Replace("'","''")+"'"; }
@@ -174,8 +204,9 @@ public static class PackageRemoval {
         if(processId<=0 || String.IsNullOrEmpty(directory) || !File.Exists(exe) || !String.Equals(Path.GetExtension(exe),".exe",StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("Некорректный путь приложения.");
         string readme=Path.Combine(directory,"README.md");
         string readmeHash=File.Exists(readme) && File.ReadAllText(readme).StartsWith(ReadmeMarker,StringComparison.Ordinal) ? Hash(readme) : "";
+        string settings=Path.Combine(directory,"hotkeys.json"), settingsHash=File.Exists(settings) && HotkeySettings.IsOwned(settings)?Hash(settings):"";
         return "$ErrorActionPreference='Stop'\n"+
-            "$appPath="+Quote(exe)+"\n$appDir="+Quote(directory)+"\n$appHash="+Quote(Hash(exe))+"\n$docPath="+Quote(readme)+"\n$docHash="+Quote(readmeHash)+"\n"+
+            "$appPath="+Quote(exe)+"\n$appDir="+Quote(directory)+"\n$appHash="+Quote(Hash(exe))+"\n$docPath="+Quote(readme)+"\n$docHash="+Quote(readmeHash)+"\n$settingsPath="+Quote(settings)+"\n$settingsHash="+Quote(settingsHash)+"\n"+
             // Only these exact paths may be removed. No recursive directory removal.
             "if([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($appPath)) -ne [IO.Path]::GetFullPath($appDir)) { exit 2 }\n"+
             "$parentApp=Get-Process -Id "+processId+" -ErrorAction SilentlyContinue\n"+
@@ -190,6 +221,7 @@ public static class PackageRemoval {
             "Remove-OwnedFile $appPath $appHash\n"+
             "if(Test-Path -LiteralPath $appPath) { exit 4 }\n"+
             "Remove-OwnedFile $docPath $docHash\n"+
+            "Remove-OwnedFile $settingsPath $settingsHash\n"+
             "if((Test-Path -LiteralPath $appDir -PathType Container) -and -not (Get-ChildItem -LiteralPath $appDir -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $appDir }\n";
     }
     public static ProcessStartInfo StartInfo(string script) {
@@ -215,8 +247,13 @@ class DiscordHelper : Form {
     TrackBar opacitySlider=new TrackBar(); Label opacityLabel=new Label(), hotkeyStatus=new Label();
     Bitmap shot; bool capturing, busy; CancellationTokenSource pending; System.Windows.Forms.Timer captureTimer;
     bool closingForCleanup; string lastCopiedText; uint copiedClipboardSequence;
+    HotkeyBinding[] hotkeys=HotkeySettings.Defaults(),draftHotkeys; TextBox[] hotkeyEditors=new TextBox[5];
+    bool hotkeysSuspended; Button applyHotkeys=new RoundButton(),resetHotkeys=new RoundButton();
+    Label hotkeyEditStatus=new Label(); Panel hotkeySettingsPanel;
+    static readonly string[] HotkeyActions={"Снимок","Отправка","Снимок + отправка","Удаление приложения","Показать / скрыть"};
     [STAThread] static void Main() { Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false); Application.Run(new DiscordHelper()); }
     public DiscordHelper() {
+        hotkeys=HotkeySettings.Load(HotkeySettings.PathName);
         Text="Discord Helper"; ShowInTaskbar=false; FormBorderStyle=FormBorderStyle.None; Size=new Size(620,760); MinimumSize=new Size(600,720); StartPosition=FormStartPosition.CenterScreen;
         Font=new Font("Segoe UI",10); BackColor=Color.FromArgb(19,21,27); ForeColor=Color.FromArgb(232,234,240); TopMost=true;
         AutoScaleMode=AutoScaleMode.Dpi; DoubleBuffered=true; Padding=new Padding(18);
@@ -259,6 +296,7 @@ class DiscordHelper : Form {
         var opacityRow=new FlowLayoutPanel { Dock=DockStyle.Fill, Margin=new Padding(0), WrapContents=false }; opacityLabel.Text="Видимость 82%"; opacityLabel.Size=new Size(132,30); opacityLabel.TextAlign=ContentAlignment.MiddleLeft;
         opacitySlider.Minimum=40; opacitySlider.Maximum=100; opacitySlider.Value=82; opacitySlider.TickStyle=TickStyle.None; opacitySlider.AutoSize=false; opacitySlider.Size=new Size(210,30); opacityRow.Controls.AddRange(new Control[]{opacityLabel,opacitySlider}); fields.Controls.Add(opacityRow,0,5); fields.SetColumnSpan(opacityRow,2);
         var connectionNote=new TableLayoutPanel { Dock=DockStyle.Fill, ColumnCount=1, RowCount=2, Margin=new Padding(0) }; destination.Text="Получатель: octavapi.shop"; destination.Dock=DockStyle.Fill; destination.Font=new Font("Segoe UI",8.5f); destination.ForeColor=Muted(); captureStatus.Dock=DockStyle.Fill; captureStatus.Font=destination.Font; captureStatus.ForeColor=Muted(); connectionNote.Controls.Add(destination,0,0); connectionNote.Controls.Add(captureStatus,0,1); fields.Controls.Add(connectionNote,0,6); fields.SetColumnSpan(connectionNote,2); settingsPanel.Controls.Add(fields); mainLayout.Controls.Add(settingsPanel,0,2);
+        CreateHotkeySettings(fields);
         foreach(var box in new TextBox[]{key,prompt,answer}) { box.BackColor=Color.FromArgb(29,32,40); box.ForeColor=ForeColor; box.BorderStyle=BorderStyle.None; }
         key.BackColor=keyHost.BackColor;
         foreach(var box in new ComboBox[]{model,provider,monitor}) {
@@ -288,20 +326,59 @@ class DiscordHelper : Form {
     }
     static Color Muted() { return Color.FromArgb(143,149,165); }
     static void AddSetting(TableLayoutPanel panel,string label,Control input,int row) { panel.Controls.Add(new Label { Text=label, Dock=DockStyle.Fill, TextAlign=ContentAlignment.MiddleLeft, ForeColor=Muted() },0,row); input.Dock=DockStyle.Fill; panel.Controls.Add(input,1,row); }
-    void ToggleSettings() { settingsOpen=!settingsOpen; settingsPanel.Visible=settingsOpen; mainLayout.RowStyles[2].Height=settingsOpen?282:0; settingsButton.Text=settingsOpen?"Готово":"Настройки"; if(WindowState==FormWindowState.Normal) { if(settingsOpen) { compactHeight=Height; Height=Math.Min(Height+190,Screen.FromControl(this).WorkingArea.Height); } else if(compactHeight>0) Height=compactHeight; } }
+    void ToggleSettings() { settingsOpen=!settingsOpen; if(!settingsOpen) ResumeHotkeys(); settingsPanel.Visible=settingsOpen; mainLayout.RowStyles[2].Height=settingsOpen?320:0; settingsButton.Text=settingsOpen?"Готово":"Настройки"; if(WindowState==FormWindowState.Normal) { if(settingsOpen) { compactHeight=Height; Height=Math.Min(Height+190,Screen.FromControl(this).WorkingArea.Height); } else if(compactHeight>0) Height=compactHeight; } }
     void ToggleMaximize() { MaximizedBounds=Screen.FromControl(this).WorkingArea; WindowState=WindowState==FormWindowState.Maximized?FormWindowState.Normal:FormWindowState.Maximized; }
     void UpdateWindowShape() { if(WindowState==FormWindowState.Minimized) return; RoundedGeometry.Clip(this,WindowState==FormWindowState.Maximized?0:20); if(maximizeButton!=null) maximizeButton.Text=WindowState==FormWindowState.Maximized?"❐":"□"; }
     protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); UpdateWindowShape(); }
     static Label SectionLabel(string text) { return new Label { Text=text, Dock=DockStyle.Fill, Font=new Font("Segoe UI",10,FontStyle.Bold), ForeColor=Color.FromArgb(232,234,240) }; }
     protected override void OnHandleCreated(EventArgs e) {
         base.OnHandleCreated(e); ApplyCaptureExclusion();
-        var unavailable=new List<string>();
-        if(!RegisterHotKey(Handle,1,0x4002,(uint)Keys.Down)) unavailable.Add("Ctrl+↓ занято");
-        if(!RegisterHotKey(Handle,2,0x4002,(uint)Keys.Right)) unavailable.Add("Ctrl+→ занято");
-        if(!RegisterHotKey(Handle,3,0x4002,(uint)Keys.Up)) unavailable.Add("Ctrl+↑ занято");
-        if(!RegisterHotKey(Handle,4,0x4006,(uint)Keys.Up)) unavailable.Add("Ctrl+Shift+↑ занято");
-        if(!RegisterHotKey(Handle,5,0x4006,(uint)Keys.Down)) unavailable.Add("Ctrl+Shift+↓ занято");
-        hotkeyStatus.Text=unavailable.Count==0 ? "Ctrl ↑  снимок + отправка    ·    Ctrl ↓  снимок    ·    Ctrl →  отправка\nCtrl Shift ↑  удалить приложение    ·    Ctrl Shift ↓  показать / скрыть" : String.Join("; ",unavailable.ToArray())+". Используй кнопки.";
+        if(!hotkeysSuspended) RegisterBindings(hotkeys); else UpdateHotkeyHint();
+    }
+    void UnregisterBindings() { if(IsHandleCreated) for(int id=1;id<=5;id++) UnregisterHotKey(Handle,id); }
+    string RegisterBindings(HotkeyBinding[] bindings) {
+        var errors=new List<string>();
+        foreach(var binding in bindings) if(!RegisterHotKey(Handle,binding.Id,binding.Modifiers|0x4000u,(uint)binding.Key)) errors.Add(binding.Display());
+        UpdateHotkeyHint(); if(errors.Count==0) return null;
+        string error="Заняты: "+String.Join(", ",errors.ToArray()); hotkeyStatus.Text=error+". Используй кнопки."; return error;
+    }
+    void UpdateHotkeyHint() { hotkeyStatus.Text=hotkeys[2].Display()+"  снимок + отправка  ·  "+hotkeys[0].Display()+"  снимок  ·  "+hotkeys[1].Display()+"  отправка\n"+hotkeys[3].Display()+"  удалить приложение  ·  "+hotkeys[4].Display()+"  показать / скрыть"; }
+    void SuspendHotkeys() { if(hotkeysSuspended) return; hotkeysSuspended=true; UnregisterBindings(); }
+    void ResumeHotkeys() { if(!hotkeysSuspended || closingForCleanup || !IsHandleCreated) return; hotkeysSuspended=false; RegisterBindings(hotkeys); }
+    void RefreshHotkeyEditors() { for(int i=0;i<5;i++) hotkeyEditors[i].Text=draftHotkeys[i].Display(); }
+    void CreateHotkeySettings(Control connectionFields) {
+        draftHotkeys=Array.ConvertAll(hotkeys,b=>b.Clone());
+        var tabs=new FlowLayoutPanel { Dock=DockStyle.Top, Height=36, WrapContents=false, Margin=new Padding(0) };
+        var connectionTab=new RoundButton { Text="Подключение",Width=138,Height=30 }; var shortcutTab=new RoundButton { Text="Горячие клавиши",Width=156,Height=30 }; tabs.Controls.AddRange(new Control[]{connectionTab,shortcutTab});
+        hotkeySettingsPanel=new Panel { Dock=DockStyle.Fill, Visible=false };
+        var table=new TableLayoutPanel { Dock=DockStyle.Fill, ColumnCount=2,RowCount=7,Margin=new Padding(0) }; table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,180)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
+        for(int row=0;row<5;row++) {
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute,34)); int index=row;
+            var editor=new TextBox { ReadOnly=true, BorderStyle=BorderStyle.None,BackColor=Color.FromArgb(39,43,53),ForeColor=ForeColor,Dock=DockStyle.Fill,ShortcutsEnabled=false,AccessibleName=HotkeyActions[row] };
+            var host=new RoundPanel { Dock=DockStyle.Fill,Padding=new Padding(8,5,8,4),Margin=new Padding(3),BackColor=editor.BackColor }; host.Controls.Add(editor); hotkeyEditors[row]=editor; AddSetting(table,HotkeyActions[row],host,row);
+            editor.Enter+=delegate { SuspendHotkeys(); hotkeyEditStatus.Text="Нажми сочетание, затем «Применить»."; };
+            editor.KeyDown+=delegate(object sender,KeyEventArgs e) {
+                e.Handled=true; e.SuppressKeyPress=true; int k=(int)e.KeyCode;
+                if(k==16 || k==17 || k==18 || k==91 || k==92) return;
+                uint mods=(e.Control?2u:0u)|(e.Alt?1u:0u)|(e.Shift?4u:0u);
+                if(mods==0) { hotkeyEditStatus.Text="Добавь Ctrl, Alt или Shift."; return; }
+                draftHotkeys[index]=new HotkeyBinding { Id=index+1,Modifiers=mods,Key=k }; editor.Text=draftHotkeys[index].Display(); hotkeyEditStatus.Text="Изменения вступят в силу после применения.";
+            };
+        }
+        table.RowStyles.Add(new RowStyle(SizeType.Absolute,38)); table.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+        var actions=new FlowLayoutPanel { Dock=DockStyle.Fill,Margin=new Padding(0),WrapContents=false }; applyHotkeys.Text="Применить"; applyHotkeys.Width=118; applyHotkeys.Height=30; applyHotkeys.BackColor=Color.FromArgb(109,104,226); resetHotkeys.Text="По умолчанию"; resetHotkeys.Width=146; resetHotkeys.Height=30; actions.Controls.AddRange(new Control[]{applyHotkeys,resetHotkeys}); table.Controls.Add(actions,0,5); table.SetColumnSpan(actions,2);
+        hotkeyEditStatus.Text="Нажми на поле и введи сочетание. При вводе действия отключены."; hotkeyEditStatus.Dock=DockStyle.Fill; hotkeyEditStatus.Font=new Font("Segoe UI",8.5f); hotkeyEditStatus.ForeColor=Muted(); table.Controls.Add(hotkeyEditStatus,0,6); table.SetColumnSpan(hotkeyEditStatus,2); hotkeySettingsPanel.Controls.Add(table);
+        applyHotkeys.Click+=delegate { ApplyHotkeyChanges(); }; resetHotkeys.Click+=delegate { SuspendHotkeys(); draftHotkeys=HotkeySettings.Defaults(); RefreshHotkeyEditors(); hotkeyEditStatus.Text="Нажми «Применить», чтобы восстановить стандартные сочетания."; };
+        connectionTab.Click+=delegate { hotkeySettingsPanel.Visible=false; connectionFields.Visible=true; ResumeHotkeys(); }; shortcutTab.Click+=delegate { connectionFields.Visible=false; hotkeySettingsPanel.Visible=true; };
+        settingsPanel.Controls.Add(hotkeySettingsPanel); settingsPanel.Controls.Add(tabs); RefreshHotkeyEditors();
+    }
+    bool ApplyHotkeyChanges() {
+        string error=HotkeySettings.Validate(draftHotkeys); if(error!=null) { hotkeyEditStatus.Text=error; return false; }
+        UnregisterBindings(); hotkeysSuspended=false; error=RegisterBindings(draftHotkeys);
+        if(error!=null) { UnregisterBindings(); RegisterBindings(hotkeys); hotkeyEditStatus.Text=error+". Прежние настройки сохранены."; applyHotkeys.Focus(); return false; }
+        try { HotkeySettings.Save(HotkeySettings.PathName,draftHotkeys); }
+        catch(Exception ex) { UnregisterBindings(); RegisterBindings(hotkeys); hotkeyEditStatus.Text="Не сохранено: "+ex.Message; applyHotkeys.Focus(); return false; }
+        hotkeys=Array.ConvertAll(draftHotkeys,b=>b.Clone()); UpdateHotkeyHint(); hotkeyEditStatus.Text="Применено и сохранено."; applyHotkeys.Focus(); return true;
     }
     void ApplyCaptureExclusion() {
         if(!IsHandleCreated) return;
@@ -324,6 +401,7 @@ class DiscordHelper : Form {
             if(hit!=0) { m.Result=new IntPtr(hit); return; }
         }
         if(m.Msg==0x312) {
+            if(hotkeysSuspended || closingForCleanup) { m.Result=IntPtr.Zero; return; }
             int id=m.WParam.ToInt32();
             if(id==1) CaptureScreen();
             else if(id==2) SendFromShortcut();

@@ -8,3 +8,5 @@ work/
 .env.*
 api-key.txt
 api-keys.txt
+hotkeys.json
+hotkeys.json.*.tmp
