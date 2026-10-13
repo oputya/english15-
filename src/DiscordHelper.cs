@@ -137,7 +137,7 @@ class RoundPanel : Panel {
 }
 class RoundButton : Button {
     bool hover;
-    public RoundButton() { FlatStyle=FlatStyle.Flat; FlatAppearance.BorderSize=0; BackColor=Color.FromArgb(39,43,53); ForeColor=Color.FromArgb(232,234,240); Cursor=Cursors.Hand; Size=new Size(100,34); Margin=new Padding(0,0,8,0); }
+    public RoundButton() { FlatStyle=FlatStyle.Flat; FlatAppearance.BorderSize=0; BackColor=Color.FromArgb(39,43,53); ForeColor=Color.FromArgb(232,234,240); Cursor=Cursors.Default; Size=new Size(100,34); Margin=new Padding(0,0,8,0); }
     protected override void OnMouseEnter(EventArgs e) { hover=true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { hover=false; Invalidate(); base.OnMouseLeave(e); }
     protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); RoundedGeometry.Clip(this,10); }
@@ -150,7 +150,30 @@ class RoundButton : Button {
     }
 }
 class DarkComboBox : ComboBox {
+    [StructLayout(LayoutKind.Sequential)] struct NativeRect { public int left,top,right,bottom; }
+    [StructLayout(LayoutKind.Sequential)] struct ComboInfo { public int size; public NativeRect item,button; public uint state; public IntPtr combo,edit,list; }
+    [DllImport("user32.dll",SetLastError=true)] static extern bool GetComboBoxInfo(IntPtr h,ref ComboInfo info);
+    [DllImport("user32.dll",SetLastError=true)] static extern bool SetWindowDisplayAffinity(IntPtr h,uint value);
+    [DllImport("user32.dll",SetLastError=true)] static extern bool GetWindowDisplayAffinity(IntPtr h,out uint value);
+    class PopupWindow : NativeWindow {
+        protected override void WndProc(ref Message m) { if(m.Msg==0x20) { Cursor.Current=Cursors.Default; m.Result=new IntPtr(1); return; } base.WndProc(ref m); }
+    }
+    PopupWindow popup=new PopupWindow(); uint captureAffinity=0x11;
+    public IntPtr PopupHandle { get { if(!IsHandleCreated) return IntPtr.Zero; var info=new ComboInfo { size=Marshal.SizeOf(typeof(ComboInfo)) }; return GetComboBoxInfo(Handle,ref info)?info.list:IntPtr.Zero; } }
+    public bool SetPopupCaptureAffinity(uint value) {
+        captureAffinity=value; IntPtr list=PopupHandle; if(list==IntPtr.Zero) return true;
+        if(popup.Handle!=list) { if(popup.Handle!=IntPtr.Zero) popup.ReleaseHandle(); popup.AssignHandle(list); }
+        uint actual; return SetWindowDisplayAffinity(list,value) && GetWindowDisplayAffinity(list,out actual) && actual==value;
+    }
+    protected override void OnDropDown(EventArgs e) {
+        if(!SetPopupCaptureAffinity(captureAffinity) && captureAffinity!=0) {
+            DroppedDown=false; var owner=FindForm() as DiscordHelper; if(owner!=null) owner.ReportPopupCaptureError(); return;
+        }
+        base.OnDropDown(e);
+    }
+    protected override void OnHandleDestroyed(EventArgs e) { if(popup.Handle!=IntPtr.Zero) popup.ReleaseHandle(); base.OnHandleDestroyed(e); }
     protected override void WndProc(ref Message m) {
+        if(m.Msg==0x20) { Cursor.Current=Cursors.Default; m.Result=new IntPtr(1); return; }
         base.WndProc(ref m);
         if(m.Msg==0xF || m.Msg==0x85 || m.Msg==0x317 || m.Msg==0x318) {
             bool print=m.Msg==0x317 || m.Msg==0x318;
@@ -163,6 +186,14 @@ class DarkComboBox : ComboBox {
                 using(var pen=new Pen(ForeColor,1.4f)) g.DrawLines(pen,new Point[]{new Point(x-3,y-2),new Point(x,y+1),new Point(x+3,y-2)});
             }
         }
+    }
+}
+class HotkeyEditor : TextBox {
+    static bool IsNavigation(Keys keys) { return (keys&Keys.KeyCode)==Keys.Tab && (keys&(Keys.Control|Keys.Alt))==0; }
+    protected override bool IsInputKey(Keys keyData) { return IsNavigation(keyData)?base.IsInputKey(keyData):true; }
+    protected override bool ProcessCmdKey(ref Message message,Keys keyData) {
+        if(IsNavigation(keyData)) return base.ProcessCmdKey(ref message,keyData);
+        OnKeyDown(new KeyEventArgs(keyData)); return true;
     }
 }
 public class HotkeyBinding {
@@ -322,8 +353,9 @@ class DiscordHelper : Form {
         capture.Click+=delegate { CaptureScreen(); }; send.Click+=async delegate { await Send(); }; captureSend.Click+=delegate { CaptureScreen(true); };
         clear.Click+=delegate { DropShot(); answer.Text="Здесь появится ответ."; status.Text="Снимок и ответ очищены."; }; cancel.Click+=delegate { if(pending!=null) pending.Cancel(); };
         copy.Click+=delegate { try { if(!String.IsNullOrEmpty(answer.Text)) { Clipboard.SetText(answer.Text); lastCopiedText=answer.Text; copiedClipboardSequence=GetClipboardSequenceNumber(); } } catch { status.Text="Буфер обмена сейчас недоступен."; } };
-        FormClosing+=delegate { if(pending!=null) pending.Cancel(); }; Opacity=opacitySlider.Value/100.0; UpdateWindowShape();
+        FormClosing+=delegate { if(pending!=null) pending.Cancel(); }; SetDefaultCursor(this); Opacity=opacitySlider.Value/100.0; UpdateWindowShape();
     }
+    static void SetDefaultCursor(Control control) { control.Cursor=Cursors.Default; control.UseWaitCursor=false; foreach(Control child in control.Controls) SetDefaultCursor(child); control.ControlAdded+=delegate(object sender,ControlEventArgs e) { SetDefaultCursor(e.Control); }; }
     static Color Muted() { return Color.FromArgb(143,149,165); }
     static void AddSetting(TableLayoutPanel panel,string label,Control input,int row) { panel.Controls.Add(new Label { Text=label, Dock=DockStyle.Fill, TextAlign=ContentAlignment.MiddleLeft, ForeColor=Muted() },0,row); input.Dock=DockStyle.Fill; panel.Controls.Add(input,1,row); }
     void ToggleSettings() { settingsOpen=!settingsOpen; if(!settingsOpen) ResumeHotkeys(); settingsPanel.Visible=settingsOpen; mainLayout.RowStyles[2].Height=settingsOpen?320:0; settingsButton.Text=settingsOpen?"Готово":"Настройки"; if(WindowState==FormWindowState.Normal) { if(settingsOpen) { compactHeight=Height; Height=Math.Min(Height+190,Screen.FromControl(this).WorkingArea.Height); } else if(compactHeight>0) Height=compactHeight; } }
@@ -354,7 +386,7 @@ class DiscordHelper : Form {
         var table=new TableLayoutPanel { Dock=DockStyle.Fill, ColumnCount=2,RowCount=7,Margin=new Padding(0) }; table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,180)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
         for(int row=0;row<5;row++) {
             table.RowStyles.Add(new RowStyle(SizeType.Absolute,34)); int index=row;
-            var editor=new TextBox { ReadOnly=true, BorderStyle=BorderStyle.None,BackColor=Color.FromArgb(39,43,53),ForeColor=ForeColor,Dock=DockStyle.Fill,ShortcutsEnabled=false,AccessibleName=HotkeyActions[row] };
+            var editor=new HotkeyEditor { ReadOnly=true, BorderStyle=BorderStyle.None,BackColor=Color.FromArgb(39,43,53),ForeColor=ForeColor,Dock=DockStyle.Fill,ShortcutsEnabled=false,AccessibleName=HotkeyActions[row] };
             var host=new RoundPanel { Dock=DockStyle.Fill,Padding=new Padding(8,5,8,4),Margin=new Padding(3),BackColor=editor.BackColor }; host.Controls.Add(editor); hotkeyEditors[row]=editor; AddSetting(table,HotkeyActions[row],host,row);
             editor.Enter+=delegate { SuspendHotkeys(); hotkeyEditStatus.Text="Нажми сочетание, затем «Применить»."; };
             editor.KeyDown+=delegate(object sender,KeyEventArgs e) {
@@ -391,9 +423,12 @@ class DiscordHelper : Form {
             captureStatus.Text="Windows не подтвердила режим захвата."; return;
         }
         captureStatus.Text=excludeCapture.Checked ? "Скрытие из захвата включено · проверь трансляцию" : "Скрытие выключено";
+        foreach(DarkComboBox combo in new DarkComboBox[]{(DarkComboBox)provider,(DarkComboBox)model,(DarkComboBox)monitor}) if(!combo.SetPopupCaptureAffinity(desired)) ReportPopupCaptureError();
     }
+    public void ReportPopupCaptureError() { captureStatus.Text="Windows не подтвердила скрытие списка."; status.Text="Выпадающий список закрыт: скрытие не подтверждено."; }
     protected override void OnHandleDestroyed(EventArgs e) { for(int id=1;id<=5;id++) UnregisterHotKey(Handle,id); base.OnHandleDestroyed(e); }
     protected override void WndProc(ref Message m) {
+        if(m.Msg==0x20) { Cursor.Current=Cursors.Default; m.Result=new IntPtr(1); return; }
         if(m.Msg==0x84 && WindowState==FormWindowState.Normal) {
             long coordinates=m.LParam.ToInt64(); Point p=PointToClient(new Point((short)(coordinates&0xffff),(short)((coordinates>>16)&0xffff)));
             bool left=p.X<8, right=p.X>=ClientSize.Width-8, up=p.Y<8, down=p.Y>=ClientSize.Height-8;
