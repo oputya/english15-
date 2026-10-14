@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Drawing;
@@ -192,63 +192,6 @@ class RoundPanel : Panel {
         using(var path=RoundedGeometry.Path(ClientRectangle,14)) using(var brush=new SolidBrush(BackColor)) e.Graphics.FillPath(brush,path);
     }
 }
-class RoundButton : Button {
-    bool hover;
-    public RoundButton() { FlatStyle=FlatStyle.Flat; FlatAppearance.BorderSize=0; BackColor=Color.FromArgb(39,43,53); ForeColor=Color.FromArgb(232,234,240); Cursor=Cursors.Default; Size=new Size(100,34); Margin=new Padding(0,0,8,0); }
-    protected override void OnMouseEnter(EventArgs e) { hover=true; Invalidate(); base.OnMouseEnter(e); }
-    protected override void OnMouseLeave(EventArgs e) { hover=false; Invalidate(); base.OnMouseLeave(e); }
-    protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); Invalidate(); }
-    protected override void OnPaintBackground(PaintEventArgs e) { e.Graphics.Clear(Parent==null?Color.FromArgb(19,21,27):Parent.BackColor); }
-    protected override void OnPaint(PaintEventArgs e) {
-        e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
-        Color fill=hover&&Enabled?ControlPaint.Light(BackColor,0.15f):BackColor;
-        using(var path=RoundedGeometry.Path(new Rectangle(0,0,Width,Height),10)) using(var brush=new SolidBrush(fill)) e.Graphics.FillPath(brush,path);
-        TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,Enabled?ForeColor:Color.FromArgb(103,109,123),TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPrefix);
-        if(Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics,new Rectangle(5,5,Width-10,Height-10));
-    }
-}
-class DarkComboBox : ComboBox {
-    [StructLayout(LayoutKind.Sequential)] struct NativeRect { public int left,top,right,bottom; }
-    [StructLayout(LayoutKind.Sequential)] struct ComboInfo { public int size; public NativeRect item,button; public uint state; public IntPtr combo,edit,list; }
-    [DllImport("user32.dll",SetLastError=true)] static extern bool GetComboBoxInfo(IntPtr h,ref ComboInfo info);
-    [DllImport("user32.dll",SetLastError=true)] static extern bool SetWindowDisplayAffinity(IntPtr h,uint value);
-    [DllImport("user32.dll",SetLastError=true)] static extern bool GetWindowDisplayAffinity(IntPtr h,out uint value);
-    class PopupWindow : NativeWindow {
-        protected override void WndProc(ref Message m) { if(m.Msg==0x20) { Cursor.Current=Cursors.Default; m.Result=new IntPtr(1); return; } base.WndProc(ref m); }
-    }
-    PopupWindow popup=new PopupWindow(); uint captureAffinity=0x11;
-    public IntPtr PopupHandle { get { if(!IsHandleCreated) return IntPtr.Zero; var info=new ComboInfo { size=Marshal.SizeOf(typeof(ComboInfo)) }; return GetComboBoxInfo(Handle,ref info)?info.list:IntPtr.Zero; } }
-    public bool SetPopupCaptureAffinity(uint value) {
-        captureAffinity=value; IntPtr list=PopupHandle; if(list==IntPtr.Zero) return true;
-        if(popup.Handle!=list) { if(popup.Handle!=IntPtr.Zero) popup.ReleaseHandle(); popup.AssignHandle(list); }
-        uint actual; return SetWindowDisplayAffinity(list,value) && GetWindowDisplayAffinity(list,out actual) && actual==value;
-    }
-    protected override void OnDropDown(EventArgs e) {
-        if(!SetPopupCaptureAffinity(captureAffinity) && captureAffinity!=0) {
-            DroppedDown=false; var owner=FindForm() as DiscordHelper; if(owner!=null) owner.ReportPopupCaptureError(); return;
-        }
-        base.OnDropDown(e);
-    }
-    protected override void OnHandleDestroyed(EventArgs e) { if(popup.Handle!=IntPtr.Zero) popup.ReleaseHandle(); base.OnHandleDestroyed(e); }
-    protected override void WndProc(ref Message m) {
-        if(m.Msg==0x20) { Cursor.Current=Cursors.Default; m.Result=new IntPtr(1); return; }
-        base.WndProc(ref m);
-        if(m.Msg==0xF || m.Msg==0x85 || m.Msg==0x317 || m.Msg==0x318) {
-            bool print=m.Msg==0x317 || m.Msg==0x318;
-            if(print && m.WParam==IntPtr.Zero) return;
-            using(var g=print?Graphics.FromHdc(m.WParam):Graphics.FromHwnd(Handle)) {
-                using(var border=new Pen(BackColor,3)) g.DrawRectangle(border,1,1,Math.Max(1,Width-3),Math.Max(1,Height-3));
-                var button=new Rectangle(Width-20,0,20,Height);
-                using(var brush=new SolidBrush(BackColor)) g.FillRectangle(brush,button);
-                g.SmoothingMode=SmoothingMode.AntiAlias; int x=Width-11,y=Height/2;
-                using(var pen=new Pen(ForeColor,1.4f)) g.DrawLines(pen,new Point[]{new Point(x-3,y-2),new Point(x,y+1),new Point(x+3,y-2)});
-                using(var mask=new GraphicsPath(FillMode.Alternate))
-                using(var rounded=RoundedGeometry.Path(ClientRectangle,8))
-                using(var brush=new SolidBrush(Parent==null?Color.FromArgb(19,21,27):Parent.BackColor)) { mask.AddRectangle(ClientRectangle); mask.AddPath(rounded,false); g.FillPath(brush,mask); }
-            }
-        }
-    }
-}
 class HotkeyEditor : TextBox {
     static bool IsNavigation(Keys keys) { return (keys&Keys.KeyCode)==Keys.Tab && (keys&(Keys.Control|Keys.Alt))==0; }
     protected override bool IsInputKey(Keys keyData) { return IsNavigation(keyData)?base.IsInputKey(keyData):true; }
@@ -262,7 +205,7 @@ public class HotkeyBinding {
     public HotkeyBinding Clone() { return new HotkeyBinding { Id=Id,Modifiers=Modifiers,Key=Key }; }
     public string Display() { return ((Modifiers&2)!=0?"Ctrl+":"")+((Modifiers&1)!=0?"Alt+":"")+((Modifiers&4)!=0?"Shift+":"")+(Key==(int)Keys.Up?"↑":Key==(int)Keys.Down?"↓":Key==(int)Keys.Right?"→":Key==(int)Keys.Left?"←":((Keys)Key).ToString()); }
 }
-public class HotkeyProfile { public string Application { get; set; } public int Version { get; set; } public HotkeyBinding[] Bindings { get; set; } }
+public class HotkeyProfile { public string Application { get; set; } public int Version { get; set; } public HotkeyBinding[] Bindings { get; set; } public bool Mouse5ScreenshotSend { get; set; } }
 public static class HotkeySettings {
     public static string PathName { get { return Path.Combine(Path.GetDirectoryName(System.Windows.Forms.Application.ExecutablePath),"hotkeys.json"); } }
     public static HotkeyBinding[] Defaults() { return new[]{new HotkeyBinding{Id=1,Modifiers=2,Key=(int)Keys.Down},new HotkeyBinding{Id=2,Modifiers=2,Key=(int)Keys.Right},new HotkeyBinding{Id=3,Modifiers=2,Key=(int)Keys.Up},new HotkeyBinding{Id=4,Modifiers=6,Key=(int)Keys.Up},new HotkeyBinding{Id=5,Modifiers=6,Key=(int)Keys.Down}}; }
@@ -279,11 +222,13 @@ public static class HotkeySettings {
     }
     public static bool IsOwned(string path) { try { var p=new JavaScriptSerializer().Deserialize<HotkeyProfile>(File.ReadAllText(path)); return p!=null && p.Application=="DiscordHelper" && p.Version==1; } catch { return false; } }
     public static HotkeyBinding[] Load(string path) { try { var p=new JavaScriptSerializer().Deserialize<HotkeyProfile>(File.ReadAllText(path)); if(p!=null && p.Application=="DiscordHelper" && p.Version==1 && Validate(p.Bindings)==null) { Array.Sort(p.Bindings,(a,b)=>a.Id.CompareTo(b.Id)); return p.Bindings; } } catch { } return Defaults(); }
-    public static void Save(string path,HotkeyBinding[] bindings) {
+    public static bool LoadMouse5(string path) { try { var p=new JavaScriptSerializer().Deserialize<HotkeyProfile>(File.ReadAllText(path)); return p!=null && p.Application=="DiscordHelper" && p.Version==1 && p.Mouse5ScreenshotSend; } catch { return false; } }
+    public static void Save(string path,HotkeyBinding[] bindings) { SaveWithMouse5(path,bindings,LoadMouse5(path)); }
+    public static void SaveWithMouse5(string path,HotkeyBinding[] bindings,bool mouse5) {
         string error=Validate(bindings); if(error!=null) throw new ArgumentException(error);
         if(File.Exists(path) && !IsOwned(path)) throw new IOException("hotkeys.json не является настройками приложения; файл не перезаписан.");
         string temporary=path+"."+Guid.NewGuid().ToString("N")+".tmp";
-        try { File.WriteAllText(temporary,new JavaScriptSerializer().Serialize(new HotkeyProfile{Application="DiscordHelper",Version=1,Bindings=bindings}),Encoding.UTF8); if(File.Exists(path)) File.Replace(temporary,path,null); else File.Move(temporary,path); }
+        try { File.WriteAllText(temporary,new JavaScriptSerializer().Serialize(new HotkeyProfile{Application="DiscordHelper",Version=1,Bindings=bindings,Mouse5ScreenshotSend=mouse5}),Encoding.UTF8); if(File.Exists(path)) File.Replace(temporary,path,null); else File.Move(temporary,path); }
         finally { if(File.Exists(temporary)) File.Delete(temporary); }
     }
 }
@@ -334,18 +279,19 @@ class DiscordHelper : Form {
     [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr h,int id);
     [DllImport("user32.dll", SetLastError=true)] static extern bool SetWindowDisplayAffinity(IntPtr h,uint affinity);
     [DllImport("user32.dll", SetLastError=true)] static extern bool GetWindowDisplayAffinity(IntPtr h,out uint affinity);
-    PictureBox preview=new PictureBox(); TextBox key=new TextBox(), prompt=new TextBox(), answer=new TextBox(); ComboBox model=new DarkComboBox(), provider=new DarkComboBox(); Button loadModels=new RoundButton(); Label destination=new Label();
-    Label status=new Label(); ComboBox monitor=new DarkComboBox(); CheckBox top=new CheckBox();
+    PictureBox preview=new PictureBox(); TextBox key=new TextBox(), prompt=new TextBox(), answer=new TextBox(); DarkComboBox model=new DarkComboBox(), provider=new DarkComboBox(); RoundButton loadModels=new RoundButton(); Label destination=new Label();
+    Label status=new Label(); DarkComboBox monitor=new DarkComboBox(); CheckBox top=new CheckBox();
     CheckBox excludeCapture=new CheckBox(); Label captureStatus=new Label();
-    Button capture=new RoundButton(), send=new RoundButton(), captureSend=new RoundButton(), clear=new RoundButton(), cancel=new RoundButton(), copy=new RoundButton();
-    Button settingsButton=new RoundButton(), minimizeButton=new RoundButton(), maximizeButton=new RoundButton(), closeButton=new RoundButton();
+    RoundButton capture=new RoundButton(), send=new RoundButton(), captureSend=new RoundButton(), clear=new RoundButton(), cancel=new RoundButton(), copy=new RoundButton();
+    RoundButton settingsButton=new RoundButton(), minimizeButton=new RoundButton(), maximizeButton=new RoundButton(), closeButton=new RoundButton();
     TableLayoutPanel mainLayout; RoundPanel settingsPanel; Label shotLabel=new Label(); bool settingsOpen; int compactHeight;
     TrackBar opacitySlider=new TrackBar(); Label opacityLabel=new Label(), hotkeyStatus=new Label();
     Bitmap shot; bool capturing, busy; CancellationTokenSource pending; System.Windows.Forms.Timer captureTimer;
     bool closingForCleanup; string lastCopiedText; uint copiedClipboardSequence;
     HotkeyBinding[] hotkeys=HotkeySettings.Defaults(),draftHotkeys; TextBox[] hotkeyEditors=new TextBox[5];
-    bool hotkeysSuspended; Button applyHotkeys=new RoundButton(),resetHotkeys=new RoundButton();
+    bool hotkeysSuspended; RoundButton applyHotkeys=new RoundButton(),resetHotkeys=new RoundButton();
     Label hotkeyEditStatus=new Label(); Panel hotkeySettingsPanel;
+    CheckBox mouse5=new CheckBox(); Mouse5Shortcut mouseShortcut; bool changingMouse5;
     static readonly string[] HotkeyActions={"Снимок","Отправка","Снимок + отправка","Удаление приложения","Показать / скрыть"};
     [STAThread] static void Main() { Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false); Application.Run(new DiscordHelper()); }
     public DiscordHelper() {
@@ -362,7 +308,7 @@ class DiscordHelper : Form {
         var windowButtons=new FlowLayoutPanel { Dock=DockStyle.Right, Width=264, WrapContents=false, Margin=new Padding(0) };
         settingsButton.Text="Настройки"; settingsButton.Size=new Size(114,34); settingsButton.Margin=new Padding(0,0,10,0);
         minimizeButton.Text="−"; maximizeButton.Text="□"; closeButton.Text="×";
-        foreach(var button in new Button[]{minimizeButton,maximizeButton,closeButton}) { button.Size=new Size(36,34); button.Margin=new Padding(0,0,6,0); button.Font=new Font("Segoe UI",13); button.BackColor=BackColor; }
+        foreach(var button in new RoundButton[]{minimizeButton,maximizeButton,closeButton}) { button.Size=new Size(36,34); button.Margin=new Padding(0,0,6,0); button.Font=new Font("Segoe UI",13); button.BackColor=BackColor; }
         windowButtons.Controls.AddRange(new Control[]{settingsButton,minimizeButton,maximizeButton,closeButton}); titleBar.Controls.Add(windowButtons); mainLayout.Controls.Add(titleBar,0,0);
         MouseEventHandler drag=delegate(object sender,MouseEventArgs e) { if(e.Button==MouseButtons.Left) { ReleaseCapture(); SendMessage(Handle,0xA1,new IntPtr(2),IntPtr.Zero); } };
         titleBar.MouseDown+=drag; title.MouseDown+=drag; title.DoubleClick+=delegate { ToggleMaximize(); }; titleBar.DoubleClick+=delegate { ToggleMaximize(); };
@@ -395,11 +341,7 @@ class DiscordHelper : Form {
         CreateHotkeySettings(fields);
         foreach(var box in new TextBox[]{key,prompt,answer}) { box.BackColor=Color.FromArgb(29,32,40); box.ForeColor=ForeColor; box.BorderStyle=BorderStyle.None; }
         key.BackColor=keyHost.BackColor;
-        foreach(var box in new ComboBox[]{model,provider,monitor}) {
-            box.BackColor=Color.FromArgb(39,43,53); box.ForeColor=ForeColor; box.FlatStyle=FlatStyle.Flat;
-            box.SizeChanged+=delegate(object sender,EventArgs e) { ((Control)sender).Invalidate(); };
-            if(box.DropDownStyle==ComboBoxStyle.DropDownList) { box.DrawMode=DrawMode.OwnerDrawFixed; box.ItemHeight=22; box.DrawItem+=delegate(object sender,DrawItemEventArgs e) { var combo=(ComboBox)sender; using(var fill=new SolidBrush((e.State&DrawItemState.Selected)!=0?Color.FromArgb(59,64,79):combo.BackColor)) e.Graphics.FillRectangle(fill,e.Bounds); if(e.Index>=0) TextRenderer.DrawText(e.Graphics,combo.GetItemText(combo.Items[e.Index]),combo.Font,new Rectangle(e.Bounds.X+8,e.Bounds.Y,e.Bounds.Width-8,e.Bounds.Height),combo.ForeColor,TextFormatFlags.Left|TextFormatFlags.VerticalCenter); }; }
-        }
+        foreach(var box in new DarkComboBox[]{model,provider,monitor}) { box.BackColor=Color.FromArgb(39,43,53); box.ForeColor=ForeColor; }
         var shotCard=new RoundPanel { Dock=DockStyle.Fill, Padding=new Padding(12) }; preview.Dock=DockStyle.Left; preview.Width=78; preview.SizeMode=PictureBoxSizeMode.Zoom; preview.BackColor=shotCard.BackColor;
         shotLabel.Text="Снимок не выбран"; shotLabel.ForeColor=Muted(); shotLabel.Dock=DockStyle.Fill; shotLabel.TextAlign=ContentAlignment.MiddleLeft; shotLabel.Padding=new Padding(12,0,0,0);
         clear.Text="Сбросить"; clear.Dock=DockStyle.Right; clear.Width=88; shotCard.Controls.Add(shotLabel); shotCard.Controls.Add(clear); shotCard.Controls.Add(preview); mainLayout.Controls.Add(shotCard,0,3);
@@ -407,7 +349,7 @@ class DiscordHelper : Form {
         prompt.Dock=DockStyle.Fill; prompt.Multiline=true; prompt.ScrollBars=ScrollBars.None; prompt.Text="Ответь на вопрос на снимке. Кратко объясни ответ."; questionCard.Controls.Add(prompt); questionCard.Controls.Add(questionLabel); mainLayout.Controls.Add(questionCard,0,4);
         var actions=new TableLayoutPanel { Dock=DockStyle.Fill, ColumnCount=3, RowCount=1, Margin=new Padding(0) }; actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,25)); actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,28)); actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,47));
         capture.Text="Снимок"; send.Text="Отправить"; captureSend.Text="Снимок + отправка"; captureSend.BackColor=Color.FromArgb(109,104,226);
-        var actionButtons=new Button[]{capture,send,captureSend}; for(int i=0;i<3;i++) { actionButtons[i].Dock=DockStyle.Fill; actionButtons[i].Margin=new Padding(0,0,i==2?0:8,10); actions.Controls.Add(actionButtons[i],i,0); } mainLayout.Controls.Add(actions,0,5);
+        var actionButtons=new RoundButton[]{capture,send,captureSend}; for(int i=0;i<3;i++) { actionButtons[i].Dock=DockStyle.Fill; actionButtons[i].Margin=new Padding(0,0,i==2?0:8,10); actions.Controls.Add(actionButtons[i],i,0); } mainLayout.Controls.Add(actions,0,5);
         var answerCard=new RoundPanel { Dock=DockStyle.Fill, Padding=new Padding(14) }; var answerHeader=new Panel { Dock=DockStyle.Top, Height=40 }; var answerLabel=SectionLabel("Ответ"); answerLabel.Dock=DockStyle.Left; answerLabel.Width=90;
         var answerTools=new FlowLayoutPanel { Dock=DockStyle.Right, Width=192, WrapContents=false }; cancel.Text="Отмена"; cancel.Size=new Size(80,30); cancel.Enabled=false; copy.Text="Копировать"; copy.Size=new Size(104,30); answerTools.Controls.AddRange(new Control[]{cancel,copy}); answerHeader.Controls.Add(answerLabel); answerHeader.Controls.Add(answerTools);
         answer.Dock=DockStyle.Fill; answer.Multiline=true; answer.ReadOnly=true; answer.ScrollBars=ScrollBars.None; answer.Text="Здесь появится ответ."; answerCard.Controls.Add(answer); answerCard.Controls.Add(answerHeader); mainLayout.Controls.Add(answerCard,0,6);
@@ -418,6 +360,8 @@ class DiscordHelper : Form {
         capture.Click+=delegate { CaptureScreen(); }; send.Click+=async delegate { await Send(); }; captureSend.Click+=delegate { CaptureScreen(true); };
         clear.Click+=delegate { DropShot(); answer.Text="Здесь появится ответ."; status.Text="Снимок и ответ очищены."; }; cancel.Click+=delegate { if(pending!=null) pending.Cancel(); };
         copy.Click+=delegate { try { if(!String.IsNullOrEmpty(answer.Text)) { Clipboard.SetText(answer.Text); lastCopiedText=answer.Text; copiedClipboardSequence=GetClipboardSequenceNumber(); } } catch { status.Text="Буфер обмена сейчас недоступен."; } };
+        mouse5.Checked=HotkeySettings.LoadMouse5(HotkeySettings.PathName);
+        mouse5.CheckedChanged+=delegate { ConfigureMouse5(true); };
         FormClosing+=delegate { if(pending!=null) pending.Cancel(); }; SetDefaultCursor(this); Opacity=opacitySlider.Value/100.0; UpdateWindowShape();
     }
     static void SetDefaultCursor(Control control) { control.Cursor=Cursors.Default; control.UseWaitCursor=false; foreach(Control child in control.Controls) SetDefaultCursor(child); control.ControlAdded+=delegate(object sender,ControlEventArgs e) { SetDefaultCursor(e.Control); }; }
@@ -431,24 +375,39 @@ class DiscordHelper : Form {
     protected override void OnHandleCreated(EventArgs e) {
         base.OnHandleCreated(e); ApplyCaptureExclusion();
         if(!hotkeysSuspended) RegisterBindings(hotkeys); else UpdateHotkeyHint();
+        ConfigureMouse5(false);
     }
     void UnregisterBindings() { if(IsHandleCreated) for(int id=1;id<=5;id++) UnregisterHotKey(Handle,id); }
     string RegisterBindings(HotkeyBinding[] bindings) {
         var errors=new List<string>();
         foreach(var binding in bindings) if(!RegisterHotKey(Handle,binding.Id,binding.Modifiers|0x4000u,(uint)binding.Key)) errors.Add(binding.Display());
-        UpdateHotkeyHint(); if(errors.Count==0) return null;
+        UpdateHotkeyHint(); UpdateMousePause(); if(errors.Count==0) return null;
         string error="Заняты: "+String.Join(", ",errors.ToArray()); hotkeyStatus.Text=error+". Используй кнопки."; return error;
     }
     void UpdateHotkeyHint() { hotkeyStatus.Text=hotkeys[2].Display()+"  снимок + отправка  ·  "+hotkeys[0].Display()+"  снимок  ·  "+hotkeys[1].Display()+"  отправка\n"+hotkeys[3].Display()+"  удалить приложение  ·  "+hotkeys[4].Display()+"  показать / скрыть"; }
-    void SuspendHotkeys() { if(hotkeysSuspended) return; hotkeysSuspended=true; UnregisterBindings(); }
-    void ResumeHotkeys() { if(!hotkeysSuspended || closingForCleanup || !IsHandleCreated) return; hotkeysSuspended=false; RegisterBindings(hotkeys); }
+    void SuspendHotkeys() { if(hotkeysSuspended) return; hotkeysSuspended=true; UnregisterBindings(); UpdateMousePause(); }
+    void ResumeHotkeys() { if(!hotkeysSuspended || closingForCleanup || !IsHandleCreated) return; hotkeysSuspended=false; RegisterBindings(hotkeys); UpdateMousePause(); }
+    void UpdateMousePause() { if(mouseShortcut!=null) mouseShortcut.Paused=hotkeysSuspended || busy || capturing || closingForCleanup; }
+    void ConfigureMouse5(bool save) {
+        if(changingMouse5 || !IsHandleCreated) return;
+        bool previous=mouseShortcut!=null && mouseShortcut.Enabled;
+        try {
+            if(mouse5.Checked && mouseShortcut==null) mouseShortcut=new Mouse5Shortcut(Handle);
+            if(save) HotkeySettings.SaveWithMouse5(HotkeySettings.PathName,hotkeys,mouse5.Checked);
+            if(mouseShortcut!=null) { mouseShortcut.Target=Handle; mouseShortcut.Enabled=mouse5.Checked; UpdateMousePause(); }
+            if(save) hotkeyEditStatus.Text=mouse5.Checked?"Mouse5 включена: «Вперёд» подавляется, снимок отправляется сразу.":"Mouse5 выключена: кнопка работает как обычно.";
+        } catch(Exception ex) {
+            changingMouse5=true; mouse5.Checked=previous; changingMouse5=false;
+            hotkeyEditStatus.Text="Не удалось включить Mouse5: "+ex.Message;
+        }
+    }
     void RefreshHotkeyEditors() { for(int i=0;i<5;i++) hotkeyEditors[i].Text=draftHotkeys[i].Display(); }
     void CreateHotkeySettings(Control connectionFields) {
         draftHotkeys=Array.ConvertAll(hotkeys,b=>b.Clone());
         var tabs=new FlowLayoutPanel { Dock=DockStyle.Top, Height=36, WrapContents=false, Margin=new Padding(0) };
         var connectionTab=new RoundButton { Text="Подключение",Width=138,Height=30 }; var shortcutTab=new RoundButton { Text="Горячие клавиши",Width=156,Height=30 }; tabs.Controls.AddRange(new Control[]{connectionTab,shortcutTab});
         hotkeySettingsPanel=new Panel { Dock=DockStyle.Fill, Visible=false };
-        var table=new TableLayoutPanel { Dock=DockStyle.Fill, ColumnCount=2,RowCount=7,Margin=new Padding(0) }; table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,180)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
+        var table=new TableLayoutPanel { Dock=DockStyle.Fill, ColumnCount=2,RowCount=8,Margin=new Padding(0) }; table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,180)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
         for(int row=0;row<5;row++) {
             table.RowStyles.Add(new RowStyle(SizeType.Absolute,34)); int index=row;
             var editor=new HotkeyEditor { ReadOnly=true, BorderStyle=BorderStyle.None,BackColor=Color.FromArgb(39,43,53),ForeColor=ForeColor,Dock=DockStyle.Fill,ShortcutsEnabled=false,AccessibleName=HotkeyActions[row] };
@@ -462,9 +421,10 @@ class DiscordHelper : Form {
                 draftHotkeys[index]=new HotkeyBinding { Id=index+1,Modifiers=mods,Key=k }; editor.Text=draftHotkeys[index].Display(); hotkeyEditStatus.Text="Изменения вступят в силу после применения.";
             };
         }
-        table.RowStyles.Add(new RowStyle(SizeType.Absolute,38)); table.RowStyles.Add(new RowStyle(SizeType.Percent,100));
-        var actions=new FlowLayoutPanel { Dock=DockStyle.Fill,Margin=new Padding(0),WrapContents=false }; applyHotkeys.Text="Применить"; applyHotkeys.Width=118; applyHotkeys.Height=30; applyHotkeys.BackColor=Color.FromArgb(109,104,226); resetHotkeys.Text="По умолчанию"; resetHotkeys.Width=146; resetHotkeys.Height=30; actions.Controls.AddRange(new Control[]{applyHotkeys,resetHotkeys}); table.Controls.Add(actions,0,5); table.SetColumnSpan(actions,2);
-        hotkeyEditStatus.Text="Нажми на поле и введи сочетание. При вводе действия отключены."; hotkeyEditStatus.Dock=DockStyle.Fill; hotkeyEditStatus.Font=new Font("Segoe UI",8.5f); hotkeyEditStatus.ForeColor=Muted(); table.Controls.Add(hotkeyEditStatus,0,6); table.SetColumnSpan(hotkeyEditStatus,2); hotkeySettingsPanel.Controls.Add(table);
+        table.RowStyles.Add(new RowStyle(SizeType.Absolute,30)); table.RowStyles.Add(new RowStyle(SizeType.Absolute,38)); table.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+        mouse5.Text="Mouse5 — снимок + отправка вместо «Вперёд»"; mouse5.AutoSize=true; table.Controls.Add(mouse5,0,5); table.SetColumnSpan(mouse5,2);
+        var actions=new FlowLayoutPanel { Dock=DockStyle.Fill,Margin=new Padding(0),WrapContents=false }; applyHotkeys.Text="Применить"; applyHotkeys.Width=118; applyHotkeys.Height=30; applyHotkeys.BackColor=Color.FromArgb(109,104,226); resetHotkeys.Text="По умолчанию"; resetHotkeys.Width=146; resetHotkeys.Height=30; actions.Controls.AddRange(new Control[]{applyHotkeys,resetHotkeys}); table.Controls.Add(actions,0,6); table.SetColumnSpan(actions,2);
+        hotkeyEditStatus.Text="Нажми на поле и введи сочетание. При вводе действия отключены."; hotkeyEditStatus.Dock=DockStyle.Fill; hotkeyEditStatus.Font=new Font("Segoe UI",8.5f); hotkeyEditStatus.ForeColor=Muted(); table.Controls.Add(hotkeyEditStatus,0,7); table.SetColumnSpan(hotkeyEditStatus,2); hotkeySettingsPanel.Controls.Add(table);
         applyHotkeys.Click+=delegate { ApplyHotkeyChanges(); }; resetHotkeys.Click+=delegate { SuspendHotkeys(); draftHotkeys=HotkeySettings.Defaults(); RefreshHotkeyEditors(); hotkeyEditStatus.Text="Нажми «Применить», чтобы восстановить стандартные сочетания."; };
         connectionTab.Click+=delegate { hotkeySettingsPanel.Visible=false; connectionFields.Visible=true; ResumeHotkeys(); }; shortcutTab.Click+=delegate { connectionFields.Visible=false; hotkeySettingsPanel.Visible=true; };
         settingsPanel.Controls.Add(hotkeySettingsPanel); settingsPanel.Controls.Add(tabs); RefreshHotkeyEditors();
@@ -479,7 +439,7 @@ class DiscordHelper : Form {
     }
     void ApplyCaptureExclusion() {
         if(!IsHandleCreated) return;
-        foreach(ComboBox combo in new ComboBox[]{provider,model,monitor}) if(combo.DroppedDown) combo.DroppedDown=false;
+        foreach(DarkComboBox combo in new DarkComboBox[]{provider,model,monitor}) if(combo.DroppedDown) combo.DroppedDown=false;
         uint desired=excludeCapture.Checked ? 0x11u : 0u;
         if(!SetWindowDisplayAffinity(Handle,desired)) {
             captureStatus.Text="Не применено: ошибка Windows "+Marshal.GetLastWin32Error()+"."; return;
@@ -489,12 +449,13 @@ class DiscordHelper : Form {
             captureStatus.Text="Windows не подтвердила режим захвата."; return;
         }
         captureStatus.Text=excludeCapture.Checked ? "Скрытие из захвата включено · проверь трансляцию" : "Скрытие выключено";
-        foreach(DarkComboBox combo in new DarkComboBox[]{(DarkComboBox)provider,(DarkComboBox)model,(DarkComboBox)monitor}) if(!combo.SetPopupCaptureAffinity(desired)) ReportPopupCaptureError();
+
         if(Visible) { Invalidate(true); RedrawWindow(Handle,IntPtr.Zero,IntPtr.Zero,0x585); Update(); }
     }
-    public void ReportPopupCaptureError() { captureStatus.Text="Windows не подтвердила скрытие списка."; status.Text="Выпадающий список закрыт: скрытие не подтверждено."; }
-    protected override void OnHandleDestroyed(EventArgs e) { for(int id=1;id<=5;id++) UnregisterHotKey(Handle,id); base.OnHandleDestroyed(e); }
+
+    protected override void OnHandleDestroyed(EventArgs e) { if(mouseShortcut!=null) { mouseShortcut.Target=IntPtr.Zero; mouseShortcut.Acknowledge(); } for(int id=1;id<=5;id++) UnregisterHotKey(Handle,id); base.OnHandleDestroyed(e); }
     protected override void WndProc(ref Message m) {
+        if(m.Msg==Mouse5Shortcut.ActionMessage) { if(mouseShortcut!=null) mouseShortcut.Acknowledge(); if(mouse5.Checked && !hotkeysSuspended && !closingForCleanup && !busy && !capturing) CaptureScreen(true); m.Result=IntPtr.Zero; return; }
         if(m.Msg==0x20) { Cursor.Current=Cursors.Default; m.Result=new IntPtr(1); return; }
         if(m.Msg==0x84 && WindowState==FormWindowState.Normal) {
             long coordinates=m.LParam.ToInt64(); Point p=PointToClient(new Point((short)(coordinates&0xffff),(short)((coordinates>>16)&0xffff)));
@@ -522,6 +483,7 @@ class DiscordHelper : Form {
     }
     void ClearSession() {
         closingForCleanup=true;
+        UpdateMousePause();
         if(pending!=null) pending.Cancel();
         if(captureTimer!=null) { captureTimer.Stop(); captureTimer.Dispose(); captureTimer=null; }
         capturing=false;
@@ -530,7 +492,7 @@ class DiscordHelper : Form {
         try { if(lastCopiedText!=null && GetClipboardSequenceNumber()==copiedClipboardSequence && Clipboard.ContainsText() && Clipboard.GetText()==lastCopiedText) Clipboard.Clear(); } catch { }
         lastCopiedText=null; copiedClipboardSequence=0;
     }
-    void ToggleBusy(bool value) { busy=value; send.Enabled=!value; capture.Enabled=!value; captureSend.Enabled=!value; clear.Enabled=!value; key.Enabled=!value; model.Enabled=!value; provider.Enabled=!value; loadModels.Enabled=!value; monitor.Enabled=!value; prompt.Enabled=!value; cancel.Enabled=value; }
+    void ToggleBusy(bool value) { busy=value; UpdateMousePause(); send.Enabled=!value; capture.Enabled=!value; captureSend.Enabled=!value; clear.Enabled=!value; key.Enabled=!value; model.Enabled=!value; provider.Enabled=!value; loadModels.Enabled=!value; monitor.Enabled=!value; prompt.Enabled=!value; cancel.Enabled=value; }
     async Task LoadModels() {
         if(busy||capturing||closingForCleanup) return;
         string apiKey=key.Text.Trim(), service=provider.Text, selected=model.Text;
@@ -547,7 +509,7 @@ class DiscordHelper : Form {
     void CaptureScreen(bool sendAfter=false) {
         if(capturing||busy||closingForCleanup) return;
         if(sendAfter && !ValidateRequest()) return;
-        capturing=true; send.Enabled=false; capture.Enabled=false; captureSend.Enabled=false; clear.Enabled=false;
+        capturing=true; UpdateMousePause(); send.Enabled=false; capture.Enabled=false; captureSend.Enabled=false; clear.Enabled=false;
         int index=monitor.SelectedIndex; Hide();
         captureTimer=new System.Windows.Forms.Timer { Interval=250 };
         captureTimer.Tick+=async delegate {
@@ -584,5 +546,5 @@ class DiscordHelper : Form {
         catch(Exception ex) { if(!IsDisposed) { answer.Text=""; status.Text="Ошибка: "+ex.Message; } }
         finally { if(png!=null) Array.Clear(png,0,png.Length); current.Dispose(); if(pending==current) pending=null; if(!IsDisposed && !closingForCleanup) ToggleBusy(false); }
     }
-    protected override void Dispose(bool disposing) { if(disposing) { if(captureTimer!=null) { captureTimer.Stop(); captureTimer.Dispose(); } DropShot(); key.Clear(); } base.Dispose(disposing); }
+    protected override void Dispose(bool disposing) { if(disposing) { if(mouseShortcut!=null) { mouseShortcut.Dispose(); mouseShortcut=null; } if(captureTimer!=null) { captureTimer.Stop(); captureTimer.Dispose(); } DropShot(); key.Clear(); } base.Dispose(disposing); }
 }
