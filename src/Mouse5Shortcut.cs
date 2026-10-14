@@ -7,6 +7,7 @@ using System.Windows.Forms;
 // The hook thread only filters input and posts a notification. Capture/API work stays on the UI thread.
 sealed class Mouse5Shortcut : IDisposable {
     public const int ActionMessage=0x8000+51;
+    public const int VisibilityMessage=0x8000+52;
     delegate IntPtr HookProc(int code,IntPtr message,IntPtr data);
     [StructLayout(LayoutKind.Sequential)] struct MouseData { public int x,y; public uint mouseData,flags,time; public UIntPtr extra; }
     [StructLayout(LayoutKind.Sequential)] struct NativeMessage { public IntPtr hwnd; public uint message; public UIntPtr wParam; public IntPtr lParam; public uint time; public int x,y; public uint privateData; }
@@ -22,11 +23,15 @@ sealed class Mouse5Shortcut : IDisposable {
     readonly Thread thread; readonly ManualResetEvent ready=new ManualResetEvent(false);
     HookProc callback; IntPtr hook,target; uint threadId; Exception startupError;
     volatile bool enabled,paused,stopping; bool pressed; int queued;
+    readonly uint buttonCode; readonly int actionMessage;
     public bool Enabled { get { return enabled; } set { enabled=value; } }
     public bool Paused { get { return paused; } set { paused=value; } }
     public IntPtr Target { get { return Interlocked.CompareExchange(ref target,IntPtr.Zero,IntPtr.Zero); } set { Interlocked.Exchange(ref target,value); } }
     public void Acknowledge() { Interlocked.Exchange(ref queued,0); }
-    public Mouse5Shortcut(IntPtr owner) {
+    public Mouse5Shortcut(IntPtr owner) : this(owner,2,ActionMessage) { }
+    public Mouse5Shortcut(IntPtr owner,uint button,int notification) {
+        if(button!=1 && button!=2) throw new ArgumentOutOfRangeException("button");
+        buttonCode=button; actionMessage=notification;
         Target=owner; thread=new Thread(Run) { IsBackground=true,Name="Mouse shortcut" }; thread.Start();
         ready.WaitOne(); ready.Dispose();
         if(startupError!=null) throw startupError;
@@ -45,13 +50,13 @@ sealed class Mouse5Shortcut : IDisposable {
     IntPtr Filter(int code,IntPtr message,IntPtr data) {
         if(code>=0 && !stopping && (message.ToInt64()==0x20B || message.ToInt64()==0x20C)) {
             var input=(MouseData)Marshal.PtrToStructure(data,typeof(MouseData));
-            if((input.mouseData>>16)==2) {
+            if((input.mouseData>>16)==buttonCode) {
                 if(message.ToInt64()==0x20B) {
                     if(pressed) return new IntPtr(1);
                     if(enabled) {
                         pressed=true;
                         if(!paused && Interlocked.CompareExchange(ref queued,1,0)==0) {
-                            if(!PostMessage(Target,ActionMessage,IntPtr.Zero,IntPtr.Zero)) Acknowledge();
+                            if(!PostMessage(Target,actionMessage,IntPtr.Zero,IntPtr.Zero)) Acknowledge();
                         }
                         return new IntPtr(1);
                     }
