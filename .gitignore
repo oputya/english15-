@@ -10,3 +10,5 @@ api-key.txt
 api-keys.txt
 hotkeys.json
 hotkeys.json.*.tmp
+settings.json
+settings.json.*.tmp

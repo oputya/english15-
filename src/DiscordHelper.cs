@@ -22,6 +22,12 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyDescription("Desktop utility host")]
 
 public static class ModelApi {
+    // Keep connection pools alive. Credentials belong to each request, never to shared defaults or cookies.
+    static readonly HttpClient client=CreateClient();
+    static HttpClient CreateClient() {
+        ServicePointManager.SecurityProtocol=SecurityProtocolType.Tls12;
+        return new HttpClient(new HttpClientHandler { AllowAutoRedirect=false,UseCookies=false }) { Timeout=Timeout.InfiniteTimeSpan };
+    }
     public static string BaseUrl(string provider) {
         if(provider=="OctavAPI") return "https://octavapi.shop/v1";
         if(provider=="OpenAI") return "https://api.openai.com/v1";
@@ -36,11 +42,10 @@ public static class ModelApi {
         var request=new HttpRequestMessage(HttpMethod.Post,BaseUrl(provider)+"/responses");
         request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",key);
         string payload=BuildPayload(model,prompt,png);
-        if(provider=="NovaAPI") {
-            var serializer=new JavaScriptSerializer { MaxJsonLength=32*1024*1024 }; var root=serializer.DeserializeObject(payload) as Dictionary<string,object>;
-            root.Remove("max_output_tokens"); root["stream"]=true; payload=serializer.Serialize(root);
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-        }
+        var serializer=new JavaScriptSerializer { MaxJsonLength=32*1024*1024 }; var root=serializer.DeserializeObject(payload) as Dictionary<string,object>;
+        if(provider=="NovaAPI") root.Remove("max_output_tokens");
+        root["stream"]=true; payload=serializer.Serialize(root);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         request.Content=new StringContent(payload,Encoding.UTF8,"application/json");
         return request;
     }
@@ -59,15 +64,13 @@ public static class ModelApi {
         models.Sort(StringComparer.OrdinalIgnoreCase); return models.ToArray();
     }
     public static async Task<string[]> GetModels(string provider,string key,CancellationToken token) {
-        ServicePointManager.SecurityProtocol=SecurityProtocolType.Tls12;
-        using(var handler=new HttpClientHandler { AllowAutoRedirect=false })
-        using(var client=new HttpClient(handler)) {
-            client.Timeout=TimeSpan.FromSeconds(30);
+        using(var deadline=CancellationTokenSource.CreateLinkedTokenSource(token)) {
+            deadline.CancelAfter(TimeSpan.FromSeconds(30));
             using(var request=new HttpRequestMessage(HttpMethod.Get,BaseUrl(provider)+"/models")) {
                 request.Headers.Authorization=new AuthenticationHeaderValue("Bearer",key);
-                using(var response=await client.SendAsync(request,token)) {
+                using(var response=await client.SendAsync(request,deadline.Token).ConfigureAwait(false)) {
                     if(!response.IsSuccessStatusCode) throw new Exception("HTTP "+(int)response.StatusCode+" при загрузке моделей. Проверь сервис и ключ; ID можно ввести вручную.");
-                    return ParseModels(await response.Content.ReadAsStringAsync());
+                    return ParseModels(await response.Content.ReadAsStringAsync().ConfigureAwait(false));
                 }
             }
         }
@@ -85,6 +88,8 @@ public static class ModelApi {
     public static string ParseAnswer(string json) {
         var root = new JavaScriptSerializer { MaxJsonLength=32*1024*1024 }.DeserializeObject(json) as Dictionary<string,object>;
         if(root==null) throw new Exception("Ответ сервера не содержит JSON-объект.");
+        object responseStatus;
+        if(root.TryGetValue("status",out responseStatus) && Convert.ToString(responseStatus)!="completed") throw new Exception("Сервис вернул незавершённый ответ.");
         var texts = new List<string>(); object value;
         if(root.TryGetValue("output", out value)) {
             var items=value as object[];
@@ -106,6 +111,8 @@ public static class ModelApi {
     }
     class StreamAnswer {
         StringBuilder data=new StringBuilder(),deltas=new StringBuilder();
+        readonly Action<string> onDelta;
+        public StreamAnswer(Action<string> onDelta=null) { this.onDelta=onDelta; }
         public string Feed(string line) {
             if(line!=null && line.Length>0) {
                 if(line.StartsWith("data:",StringComparison.Ordinal)) { if(data.Length>0) data.Append('\n'); data.Append(line.Substring(5).TrimStart(' ')); if(data.Length>32*1024*1024) throw new Exception("Ответ сервера слишком большой."); }
@@ -115,10 +122,14 @@ public static class ModelApi {
             var serializer=new JavaScriptSerializer { MaxJsonLength=32*1024*1024 }; var root=serializer.DeserializeObject(json) as Dictionary<string,object>; object type,body;
             if(root==null || !root.TryGetValue("type",out type)) return null;
             string kind=Convert.ToString(type);
-            if((kind=="response.output_text.delta" || kind=="response.refusal.delta") && root.TryGetValue("delta",out body)) { deltas.Append(Convert.ToString(body)); if(deltas.Length>32*1024*1024) throw new Exception("Ответ сервера слишком большой."); }
+            if((kind=="response.output_text.delta" || kind=="response.refusal.delta") && root.TryGetValue("delta",out body)) { string delta=Convert.ToString(body); deltas.Append(delta); if(deltas.Length>32*1024*1024) throw new Exception("Ответ сервера слишком большой."); if(delta.Length>0 && onDelta!=null) onDelta(delta); }
             if(kind=="error" || kind=="response.failed" || kind=="response.incomplete") throw new Exception("Сервис прервал ответ: "+kind+".");
             if(kind=="response.completed") {
-                if(root.TryGetValue("response",out body)) { try { return ParseAnswer(serializer.Serialize(body)); } catch(Exception) { if(deltas.Length==0) throw; } }
+                if(root.TryGetValue("response",out body)) {
+                    var completed=body as Dictionary<string,object>; object status;
+                    if(completed!=null && completed.TryGetValue("status",out status) && Convert.ToString(status)!="completed") throw new Exception("Сервис вернул незавершённый ответ.");
+                    try { return ParseAnswer(serializer.Serialize(body)); } catch(Exception) { if(deltas.Length==0) throw; }
+                }
                 if(deltas.Length>0) return deltas.ToString(); throw new Exception("Сервис завершил поток без текстового ответа.");
             }
             return null;
@@ -128,16 +139,24 @@ public static class ModelApi {
         var parser=new StreamAnswer(); using(var reader=new StringReader(text)) { string line,result; while((line=reader.ReadLine())!=null) if((result=parser.Feed(line))!=null) return result; result=parser.Feed(null); if(result!=null) return result; }
         throw new Exception("Поток оборвался до подтверждения завершения ответа.");
     }
-    static async Task<string> ReadAnswer(HttpResponseMessage response,CancellationToken token) {
+    static Task<string> ReadAnswer(HttpResponseMessage response,CancellationToken token) { return ReadStreamingAnswer(response,token,null); }
+    static async Task<string> ReadStreamingAnswer(HttpResponseMessage response,CancellationToken token,IProgress<string> progress) {
         token.ThrowIfCancellationRequested();
         string type=response.Content.Headers.ContentType==null?"":response.Content.Headers.ContentType.MediaType;
-        using(var stream=await response.Content.ReadAsStreamAsync())
+        using(var stream=await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
         using(var reader=new StreamReader(stream,Encoding.UTF8))
         using(var registration=token.Register(()=>stream.Dispose())) {
             try {
                 token.ThrowIfCancellationRequested();
-                if(!String.Equals(type,"text/event-stream",StringComparison.OrdinalIgnoreCase)) { string json=await reader.ReadToEndAsync(); token.ThrowIfCancellationRequested(); return ParseAnswer(json); }
-                var parser=new StreamAnswer(); string line,result; while((line=await reader.ReadLineAsync())!=null) { token.ThrowIfCancellationRequested(); if((result=parser.Feed(line))!=null) return result; } result=parser.Feed(null); if(result!=null) return result; throw new Exception("Поток оборвался до подтверждения завершения ответа.");
+                if(!String.Equals(type,"text/event-stream",StringComparison.OrdinalIgnoreCase)) { string json=await reader.ReadToEndAsync().ConfigureAwait(false); token.ThrowIfCancellationRequested(); return ParseAnswer(json); }
+                var partial=new StringBuilder(); var refresh=Stopwatch.StartNew(); bool shown=false;
+                var parser=new StreamAnswer(progress==null?null:(Action<string>)delegate(string delta) {
+                    partial.Append(delta);
+                    // First text appears immediately; batch subsequent fragments to keep the UI responsive.
+                    if(!shown || refresh.ElapsedMilliseconds>=80) { progress.Report(partial.ToString()); shown=true; refresh.Restart(); }
+                });
+                string line,result; while((line=await reader.ReadLineAsync().ConfigureAwait(false))!=null) { token.ThrowIfCancellationRequested(); if((result=parser.Feed(line))!=null) return result; }
+                result=parser.Feed(null); if(result!=null) return result; throw new Exception("Поток оборвался до подтверждения завершения ответа.");
             }
             catch(Exception) { token.ThrowIfCancellationRequested(); throw; }
         }
@@ -146,14 +165,17 @@ public static class ModelApi {
         return await Ask("OpenAI",key,model,prompt,png,token);
     }
     public static async Task<string> Ask(string provider,string key, string model, string prompt, byte[] png, CancellationToken token) {
-        ServicePointManager.SecurityProtocol=SecurityProtocolType.Tls12;
-        using(var handler=new HttpClientHandler { AllowAutoRedirect=false })
-        using(var client=new HttpClient(handler))
+        return await AskStreaming(provider,key,model,prompt,png,token,null).ConfigureAwait(false);
+    }
+    public static Task<string> AskStreaming(string provider,string key,string model,string prompt,byte[] png,CancellationToken token,IProgress<string> progress) {
+        return SendRequest(client,provider,key,model,prompt,png,token,progress);
+    }
+    static async Task<string> SendRequest(HttpClient transport,string provider,string key,string model,string prompt,byte[] png,CancellationToken token,IProgress<string> progress) {
         using(var deadline=CancellationTokenSource.CreateLinkedTokenSource(token)) {
             deadline.CancelAfter(TimeSpan.FromSeconds(120));
-            client.Timeout=TimeSpan.FromSeconds(120);
+            deadline.Token.ThrowIfCancellationRequested();
             using(var request=CreateRequest(provider,key,model,prompt,png)) {
-                using(var response=await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,deadline.Token)) {
+                using(var response=await transport.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,deadline.Token).ConfigureAwait(false)) {
                     if(!response.IsSuccessStatusCode) {
                         string hint="Проверь доступ к модели и подключение.";
                         if((int)response.StatusCode==401) hint="Проверь API-ключ.";
@@ -163,7 +185,7 @@ public static class ModelApi {
                         if((int)response.StatusCode==404) hint="Проверь название модели.";
                         throw new Exception("HTTP "+(int)response.StatusCode+". "+hint);
                     }
-                    return await ReadAnswer(response,deadline.Token);
+                    return await ReadStreamingAnswer(response,deadline.Token,progress).ConfigureAwait(false);
                 }
             }
         }
@@ -242,8 +264,9 @@ public static class PackageRemoval {
         string readme=Path.Combine(directory,"README.md");
         string readmeHash=File.Exists(readme) && File.ReadAllText(readme).StartsWith(ReadmeMarker,StringComparison.Ordinal) ? Hash(readme) : "";
         string settings=Path.Combine(directory,"hotkeys.json"), settingsHash=File.Exists(settings) && HotkeySettings.IsOwned(settings)?Hash(settings):"";
+        string userSettings=Path.Combine(directory,"settings.json"), userSettingsHash=File.Exists(userSettings) && UserSettings.IsOwned(userSettings)?Hash(userSettings):"";
         return "$ErrorActionPreference='Stop'\n"+
-            "$appPath="+Quote(exe)+"\n$appDir="+Quote(directory)+"\n$appHash="+Quote(Hash(exe))+"\n$docPath="+Quote(readme)+"\n$docHash="+Quote(readmeHash)+"\n$settingsPath="+Quote(settings)+"\n$settingsHash="+Quote(settingsHash)+"\n"+
+            "$appPath="+Quote(exe)+"\n$appDir="+Quote(directory)+"\n$appHash="+Quote(Hash(exe))+"\n$docPath="+Quote(readme)+"\n$docHash="+Quote(readmeHash)+"\n$settingsPath="+Quote(settings)+"\n$settingsHash="+Quote(settingsHash)+"\n$userSettingsPath="+Quote(userSettings)+"\n$userSettingsHash="+Quote(userSettingsHash)+"\n"+
             // Only these exact paths may be removed. No recursive directory removal.
             "if([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($appPath)) -ne [IO.Path]::GetFullPath($appDir)) { exit 2 }\n"+
             "$parentApp=Get-Process -Id "+processId+" -ErrorAction SilentlyContinue\n"+
@@ -259,6 +282,7 @@ public static class PackageRemoval {
             "if(Test-Path -LiteralPath $appPath) { exit 4 }\n"+
             "Remove-OwnedFile $docPath $docHash\n"+
             "Remove-OwnedFile $settingsPath $settingsHash\n"+
+            "Remove-OwnedFile $userSettingsPath $userSettingsHash\n"+
             "if((Test-Path -LiteralPath $appDir -PathType Container) -and -not (Get-ChildItem -LiteralPath $appDir -Force | Select-Object -First 1)) { Remove-Item -LiteralPath $appDir }\n";
     }
     public static ProcessStartInfo StartInfo(string script) {
@@ -362,7 +386,22 @@ class DiscordHelper : Form {
         copy.Click+=delegate { try { if(!String.IsNullOrEmpty(answer.Text)) { Clipboard.SetText(answer.Text); lastCopiedText=answer.Text; copiedClipboardSequence=GetClipboardSequenceNumber(); } } catch { status.Text="Буфер обмена сейчас недоступен."; } };
         mouse5.Checked=HotkeySettings.LoadMouse5(HotkeySettings.PathName);
         mouse5.CheckedChanged+=delegate { ConfigureMouse5(true); };
-        FormClosing+=delegate { if(pending!=null) pending.Cancel(); }; SetDefaultCursor(this); Opacity=opacitySlider.Value/100.0; UpdateWindowShape();
+        RestoreUserSettings();
+        FormClosing+=delegate(object sender,FormClosingEventArgs e) {
+            if(!closingForCleanup) {
+                try { UserSettings.Save(UserSettings.PathName,provider.Text,model.Text,prompt.Text,key.Text); }
+                catch(Exception ex) { e.Cancel=true; status.Text="Не удалось сохранить настройки: "+ex.Message; return; }
+            }
+            if(pending!=null) pending.Cancel();
+        }; SetDefaultCursor(this); Opacity=opacitySlider.Value/100.0; UpdateWindowShape();
+    }
+    void RestoreUserSettings() {
+        try {
+            var saved=UserSettings.Load(UserSettings.PathName); if(saved==null) return;
+            provider.SelectedItem=saved.Provider; model.Text=saved.Model??""; prompt.Text=saved.Question??"";
+            // Clear any environment key before decrypting so a failed restore cannot use a different key.
+            key.Clear(); key.Text=saved.ReadKey(); status.Text=key.Text.Length==0?"Введи API-ключ в настройках.":"Настройки восстановлены · "+provider.Text;
+        } catch(Exception ex) { status.Text="Не удалось восстановить настройки: "+ex.Message; }
     }
     static void SetDefaultCursor(Control control) { control.Cursor=Cursors.Default; control.UseWaitCursor=false; foreach(Control child in control.Controls) SetDefaultCursor(child); control.ControlAdded+=delegate(object sender,ControlEventArgs e) { SetDefaultCursor(e.Control); }; }
     static Color Muted() { return Color.FromArgb(143,149,165); }
@@ -537,14 +576,30 @@ class DiscordHelper : Form {
         string apiKey=key.Text.Trim(), selectedModel=model.Text.Trim(), question=prompt.Text.Trim();
         if(apiKey.Length==0) { status.Text="Введи свой API-ключ. Здесь его не нужно присылать в чат."; return; }
         if(selectedModel.Length==0||question.Length==0) { status.Text="Заполни модель и вопрос."; return; }
-        byte[] png=null;
-        if(shot!=null) using(var stream=new MemoryStream()) { shot.Save(stream,ImageFormat.Png); png=stream.ToArray(); }
-        string service=provider.Text;
+        byte[] png=null; string service=provider.Text,partialAnswer=null;
+        var clock=Stopwatch.StartNew(); long pngMilliseconds=0,firstTextMilliseconds=-1; bool acceptProgress=true;
         var current=new CancellationTokenSource(); pending=current; ToggleBusy(true); answer.Text="Ожидаю ответ…"; status.Text="Запрос отправляется в "+service+".";
-        try { string result=await ModelApi.Ask(service,apiKey,selectedModel,question,png,current.Token); if(!IsDisposed) { answer.Text=result; status.Text="Ответ получен от "+service+"."; } }
-        catch(OperationCanceledException) { if(!IsDisposed) { answer.Text=""; status.Text=current.IsCancellationRequested?"Ожидание отменено. Сервер мог уже обработать запрос.":"Время ожидания истекло."; } }
-        catch(Exception ex) { if(!IsDisposed) { answer.Text=""; status.Text="Ошибка: "+ex.Message; } }
-        finally { if(png!=null) Array.Clear(png,0,png.Length); current.Dispose(); if(pending==current) pending=null; if(!IsDisposed && !closingForCleanup) ToggleBusy(false); }
+        var progress=new Progress<string>(delegate(string text) {
+            if(!acceptProgress || IsDisposed || closingForCleanup || pending!=current || current.IsCancellationRequested) return;
+            if(firstTextMilliseconds<0) firstTextMilliseconds=clock.ElapsedMilliseconds;
+            partialAnswer=text; answer.Text=text;
+            status.Text="Ответ поступает от "+service+"… Первый текст: "+Seconds(firstTextMilliseconds)+" с.";
+        });
+        try {
+            // Keep the original full-resolution PNG path, pixels and API image detail unchanged.
+            if(shot!=null) using(var stream=new MemoryStream()) { shot.Save(stream,ImageFormat.Png); png=stream.ToArray(); }
+            pngMilliseconds=clock.ElapsedMilliseconds;
+            string result=await Task.Run(()=>ModelApi.AskStreaming(service,apiKey,selectedModel,question,png,current.Token,progress));
+            acceptProgress=false;
+            if(!IsDisposed && !closingForCleanup) {
+                if(firstTextMilliseconds<0) firstTextMilliseconds=clock.ElapsedMilliseconds;
+                answer.Text=result; status.Text="Ответ получен от "+service+".\nPNG: "+Seconds(pngMilliseconds)+" с · первый текст: "+Seconds(firstTextMilliseconds)+" с · всего: "+Seconds(clock.ElapsedMilliseconds)+" с";
+            }
+        }
+        catch(OperationCanceledException) { acceptProgress=false; if(!IsDisposed && !closingForCleanup) { answer.Text=partialAnswer==null?"":"Незавершённый ответ:\r\n\r\n"+partialAnswer; status.Text=current.IsCancellationRequested?"Ожидание отменено. Сервер мог уже обработать запрос.":"Время ожидания истекло."; } }
+        catch(Exception ex) { acceptProgress=false; if(!IsDisposed && !closingForCleanup) { answer.Text=partialAnswer==null?"":"Незавершённый ответ:\r\n\r\n"+partialAnswer; status.Text="Ошибка: "+ex.Message; } }
+        finally { acceptProgress=false; if(png!=null) Array.Clear(png,0,png.Length); current.Dispose(); if(pending==current) pending=null; if(!IsDisposed && !closingForCleanup) ToggleBusy(false); }
     }
+    static string Seconds(long milliseconds) { return (milliseconds/1000.0).ToString("0.0"); }
     protected override void Dispose(bool disposing) { if(disposing) { if(mouseShortcut!=null) { mouseShortcut.Dispose(); mouseShortcut=null; } if(captureTimer!=null) { captureTimer.Stop(); captureTimer.Dispose(); } DropShot(); key.Clear(); } base.Dispose(disposing); }
 }

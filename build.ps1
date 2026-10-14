@@ -9,6 +9,6 @@ $sourcePaths = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'src') -Fil
 $outputDirectory = Join-Path $PSScriptRoot 'dist'
 $executablePath = Join-Path $outputDirectory 'DeskHost.exe'
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
-& $compilerPath /nologo /target:winexe "/out:$executablePath" /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Net.Http.dll /reference:System.Web.Extensions.dll $sourcePaths
+& $compilerPath /nologo /target:winexe "/out:$executablePath" /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Net.Http.dll /reference:System.Web.Extensions.dll /reference:System.Security.dll $sourcePaths
 if ($LASTEXITCODE -ne 0) { throw "Build failed (exit $LASTEXITCODE). Close the running EXE before rebuilding." }
 Write-Output "Built $executablePath"
