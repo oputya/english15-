@@ -32,11 +32,12 @@ public static class ModelApi {
         if(provider=="OctavAPI") return "https://octavapi.shop/v1";
         if(provider=="OpenAI") return "https://api.openai.com/v1";
         if(provider=="NovaAPI") return "https://ru.cheapvibecode.ru/backend-api/codex";
+        if(provider=="AIHope") return "https://aihope.fun/v1";
         throw new ArgumentException("Неизвестный сервис.");
     }
-    public static string DefaultModel(string provider) { BaseUrl(provider); return provider=="NovaAPI"?"gpt-5.6-terra":provider=="OctavAPI"?"gpt-6-luna":"gpt-4.1"; }
+    public static string DefaultModel(string provider) { BaseUrl(provider); return provider=="AIHope"?"gpt-5.6-sol":provider=="NovaAPI"?"gpt-5.6-terra":provider=="OctavAPI"?"gpt-6-luna":"gpt-4.1"; }
     public static string EnvironmentKey(string provider) {
-        BaseUrl(provider); return provider=="NovaAPI"?(Environment.GetEnvironmentVariable("NOVA_API_KEY")??Environment.GetEnvironmentVariable("CVC_API_KEY")??""):Environment.GetEnvironmentVariable(provider=="OctavAPI"?"OCTAVA_API_KEY":"OPENAI_API_KEY")??"";
+        BaseUrl(provider); return provider=="AIHope"?(Environment.GetEnvironmentVariable("AIHOPE_API_KEY")??""):provider=="NovaAPI"?(Environment.GetEnvironmentVariable("NOVA_API_KEY")??Environment.GetEnvironmentVariable("CVC_API_KEY")??""):Environment.GetEnvironmentVariable(provider=="OctavAPI"?"OCTAVA_API_KEY":"OPENAI_API_KEY")??"";
     }
     public static HttpRequestMessage CreateRequest(string provider,string key,string model,string prompt,byte[] png) {
         var request=new HttpRequestMessage(HttpMethod.Post,BaseUrl(provider)+"/responses");
@@ -359,7 +360,7 @@ class DiscordHelper : Form {
         var fields=new TableLayoutPanel { Dock=DockStyle.Fill, ColumnCount=2, RowCount=7, Margin=new Padding(0) };
         fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,90)); fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
         int[] heights={34,34,36,34,34,34,40}; foreach(int height in heights) fields.RowStyles.Add(new RowStyle(SizeType.Absolute,height));
-        provider.DropDownStyle=ComboBoxStyle.DropDownList; provider.Items.AddRange(new object[]{"OctavAPI","OpenAI","NovaAPI"}); provider.SelectedIndex=0;
+        provider.DropDownStyle=ComboBoxStyle.DropDownList; provider.Items.AddRange(new object[]{"OctavAPI","OpenAI","NovaAPI","AIHope"}); provider.SelectedIndex=0;
         key.UseSystemPasswordChar=true; key.Text=Environment.GetEnvironmentVariable("OCTAVA_API_KEY")??""; model.Text="gpt-6-luna";
         AddSetting(fields,"Сервис",provider,0);
         var keyHost=new RoundPanel { Dock=DockStyle.Fill, Padding=new Padding(9,6,9,4), Margin=new Padding(3), BackColor=Color.FromArgb(39,43,53) }; key.Dock=DockStyle.Fill; keyHost.Controls.Add(key); AddSetting(fields,"API-ключ",keyHost,1);
