@@ -8,6 +8,7 @@ using System.Windows.Forms;
 sealed class Mouse5Shortcut : IDisposable {
     public const int ActionMessage=0x8000+51;
     public const int VisibilityMessage=0x8000+52;
+    public const int MiddleActionMessage=0x8000+53;
     delegate IntPtr HookProc(int code,IntPtr message,IntPtr data);
     [StructLayout(LayoutKind.Sequential)] struct MouseData { public int x,y; public uint mouseData,flags,time; public UIntPtr extra; }
     [StructLayout(LayoutKind.Sequential)] struct NativeMessage { public IntPtr hwnd; public uint message; public UIntPtr wParam; public IntPtr lParam; public uint time; public int x,y; public uint privateData; }
@@ -30,7 +31,7 @@ sealed class Mouse5Shortcut : IDisposable {
     public void Acknowledge() { Interlocked.Exchange(ref queued,0); }
     public Mouse5Shortcut(IntPtr owner) : this(owner,2,ActionMessage) { }
     public Mouse5Shortcut(IntPtr owner,uint button,int notification) {
-        if(button!=1 && button!=2) throw new ArgumentOutOfRangeException("button");
+        if(button!=1 && button!=2 && button!=3) throw new ArgumentOutOfRangeException("button");
         buttonCode=button; actionMessage=notification;
         Target=owner; thread=new Thread(Run) { IsBackground=true,Name="Mouse shortcut" }; thread.Start();
         ready.WaitOne(); ready.Dispose();
@@ -48,10 +49,11 @@ sealed class Mouse5Shortcut : IDisposable {
         finally { if(hook!=IntPtr.Zero) UnhookWindowsHookEx(hook); hook=IntPtr.Zero; GC.KeepAlive(callback); }
     }
     IntPtr Filter(int code,IntPtr message,IntPtr data) {
-        if(code>=0 && !stopping && (message.ToInt64()==0x20B || message.ToInt64()==0x20C)) {
-            var input=(MouseData)Marshal.PtrToStructure(data,typeof(MouseData));
-            if((input.mouseData>>16)==buttonCode) {
-                if(message.ToInt64()==0x20B) {
+        bool down=message.ToInt64()==(buttonCode==3?0x207:0x20B);
+        bool up=message.ToInt64()==(buttonCode==3?0x208:0x20C);
+        if(code>=0 && !stopping && (down || up)) {
+            if(buttonCode==3 || (((MouseData)Marshal.PtrToStructure(data,typeof(MouseData))).mouseData>>16)==buttonCode) {
+                if(down) {
                     if(pressed) return new IntPtr(1);
                     if(enabled) {
                         pressed=true;
